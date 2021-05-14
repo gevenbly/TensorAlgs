@@ -42,7 +42,7 @@ def pre_ncon(connects, dims=None, order=None):
   pt_costs, bn_costs = compute_costs(nml_connects, nml_dims, pt_cont, bn_cont, 
                                      rev_dim_dict)
     
-  return pt_cont, bn_cont, pt_costs, bn_costs
+  return nml_connects, fwd_dict, rev_dict, pt_cont, bn_cont, pt_costs, bn_costs
 
 def compute_costs(connects, dims, pt_cont, bn_cont, rev_dim_dict):
   """ 
