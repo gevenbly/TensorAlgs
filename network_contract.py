@@ -114,7 +114,12 @@ def compute_costs(connects, dims, pt_cont, bn_cont, rev_dim_dict):
 
     int_pt_costs.append(int_cost)
     if int_cost > 1:
-      fin_pt_costs.append("{:.2e}".format(int_cost) + '*' + str_cost)
+      if int_cost > 99:
+        fin_pt_costs.append("{:.1e}".format(int_cost) + '*' + str_cost)
+      else:
+        fin_pt_costs.append(str(int_cost) + '*' + str_cost)
+    else:
+      fin_bn_costs.append(str_cost)
 
   # tally the total binary contraction costs
   int_bn_costs = []
@@ -136,7 +141,12 @@ def compute_costs(connects, dims, pt_cont, bn_cont, rev_dim_dict):
 
     int_bn_costs.append(int_cost)
     if int_cost > 1:
-      fin_bn_costs.append("{:.2e}".format(int_cost) + '*' + str_cost)
+      if int_cost > 99:
+        fin_bn_costs.append("{:.1e}".format(int_cost) + '*' + str_cost)
+      else:
+        fin_bn_costs.append(str(int_cost) + '*' + str_cost)
+    else:
+      fin_bn_costs.append(str_cost)
 
   if not is_symbolic:
     fin_pt_costs = int_pt_costs

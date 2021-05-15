@@ -10,12 +10,19 @@ Original file is located at
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
+import matplotlib.lines as mlines
 from matplotlib import patches
 from typing import Optional, List, Union, Tuple
+from network_contract import pre_ncon
 
 def draw_network(curr_fig, connects, names=None, coords=None, cols=None, 
-                 circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
-                 draw_labels=True, title=None):
+                 dims=None, circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
+                 draw_labels=True, title=None, order=None, bkg_col='silver',
+                 col_inds=True, legend_extend=1.5):
+
+  # recast connects in canonical form, compute contraction list and costs
+  (nm_connects, fwd_dict, back_dict, pt_cont, bn_cont, pt_costs, 
+   bn_costs) = pre_ncon(connects, dims, order)
 
   # configuration parameters
   double_offset = 0.09 # spacing between double indices
@@ -38,6 +45,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     'violet']
   num_mcols = len(marker_palette)
   marker_set = ['o', '^', 'x', 's']
+  line_set = ['solid', 'dashed', 'dashdot', 'dotted']
   
   # generate default names
   if names is None:
@@ -95,6 +103,19 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
         y_residue[k] = y_residue[k] + ((-1)**temp_order) * np.cos(thet) * circ_rad
         y_residue[p] = y_residue[p] - ((-1)**temp_order) * np.cos(thet) * circ_rad
 
+        # determine index colors and linetypes
+        if col_inds:
+          cont_inds = np.intersect1d(nm_connects[k], nm_connects[p])
+          for count, inds in enumerate(bn_cont):
+            if len(np.intersect1d(inds, cont_inds)) > 0:
+              ind_line, ind_col = np.divmod(count, num_mcols)
+              line_col = marker_palette[ind_col]
+              line_type = line_set[ind_line]
+              break
+        else:
+          line_col = 'k'
+          line_type = 'solid'
+
         if adjmat[k,p] == 1:
           # determine tag colors and shapes
           ind_names, pos0, pos1 = np.intersect1d(connects[k],connects[p], 
@@ -104,11 +125,13 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
 
           # draw the index
           _draw_index(x0, x1, y0, y1,
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col0], 
                       color1=marker_palette[col1],  
                       marker0=marker_set[mark0], marker1=marker_set[mark1],
                       markersize=tagsize, t_name=ind_names.item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
           
         elif adjmat[k,p] == 2:
           # determine tag colors and shapes
@@ -131,19 +154,23 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
           y1m = y1 + np.sin(thet)*double_offset
 
           # draw the indices
-          _draw_index(x0m, x1m, y0m, y1m, 
+          _draw_index(x0m, x1m, y0m, y1m,
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col00], 
                       color1=marker_palette[col10], 
                       marker0=marker_set[mark00], marker1=marker_set[mark10],
                       markersize=tagsize, t_name=ind_names[0].item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
 
           _draw_index(x0p, x1p, y0p, y1p,
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col01], 
                       color1=marker_palette[col11], 
                       marker0=marker_set[mark01], marker1=marker_set[mark11],
                       markersize=tagsize, t_name=ind_names[1].item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
         
         elif adjmat[k,p] == 3:
           # determine tag colors and shapes
@@ -169,33 +196,41 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
 
           # draw the indices
           _draw_index(x0m, x1m, y0m, y1m, 
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col00], 
                       color1=marker_palette[col10], 
                       marker0=marker_set[mark00], marker1=marker_set[mark10],
                       markersize=tagsize, t_name=ind_names[0].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
           
-          _draw_index(x0, x1, y0, y1, 
+          _draw_index(x0, x1, y0, y1,
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col01], 
                       color1=marker_palette[col11], 
                       marker0=marker_set[mark01], marker1=marker_set[mark11],
                       markersize=tagsize, t_name=ind_names[1].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
 
           _draw_index(x0p, x1p, y0p, y1p,
+                      color=line_col, line_type=line_type,
                       color0=marker_palette[col02], 
                       color1=marker_palette[col12], 
                       marker0=marker_set[mark02], marker1=marker_set[mark12],
                       markersize=tagsize, t_name=ind_names[2].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                      bkg_col=bkg_col)
         
         else:
-          # draw dashed index when more than four indices connect
-          plt.plot([x0, x1], [y0, y1], color='k', linewidth=4, linestyle='dashed')
-          ind_names, pos0, pos1 = np.intersect1d(connects[k],connects[p], 
-                                                 return_indices=True)
-          plt.plot([x0], [y0], marker='o', markersize=tagsize + 2, color='k')
-          plt.plot([x1], [y1], marker='o', markersize=tagsize + 2, color='k')
+          _draw_index(x0, x1, y0, y1,
+                      color=line_col, line_type=line_type,
+                      color0='k', 
+                      color1='k',  
+                      marker0='o', marker1='o',
+                      markersize=tagsize, 
+                      fontsize=fontsize, draw_labels=False, ax1=ax1,
+                      bkg_col=bkg_col, linewidth=5)
 
   # draw open indices  
   for k in range(N):
@@ -233,8 +268,8 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
 
       if adjmat[k,k] == 1:
         # determine tag colors and shapes
-        loc = np.where(np.array(connects[k], dtype=int) <= 0)[0].item()
-        val = np.abs(connects[k][loc]) - 1
+        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0].item()
+        val = np.abs(nm_connects[k][loc]) - 1
         mark0, col0 = np.divmod(loc, num_mcols)
         mark1, col1 = np.divmod(val, num_mcols)
         xf = (coordx + x1) / 2
@@ -246,7 +281,8 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     color1=marker_palette[col1],  
                     marker0=marker_set[mark0], marker1=marker_set[mark1],
                     markersize=tagsize, t_name=connects[k][loc], 
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
       
       elif adjmat[k,k] == 2:
         # determine tag end points
@@ -264,9 +300,9 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
         y2 = (coordy + y1) / 2
 
         # determine marker shapes and colors
-        loc = np.where(np.array(connects[k], dtype=int) <= 0)[0]
-        val0 = np.abs(connects[k][loc[0]]) - 1
-        val1 = np.abs(connects[k][loc[1]]) - 1
+        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
+        val0 = np.abs(nm_connects[k][loc[0]]) - 1
+        val1 = np.abs(nm_connects[k][loc[1]]) - 1
         mark0A, col0A = np.divmod(loc[0].item(), num_mcols)
         mark0B, col0B = np.divmod(loc[1].item(), num_mcols)
         mark1A, col1A = np.divmod(val0, num_mcols)
@@ -280,7 +316,8 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     color1=marker_palette[col1A],  
                     marker0=marker_set[mark0A], marker1=marker_set[mark1A],
                     markersize=tagsize, t_name=connects[k][loc[0]],
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
         
         _draw_index(x0p, x1p, y0p, y1p,
                     xf=x2 + np.cos(thet)*double_offset,
@@ -289,7 +326,8 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     color1=marker_palette[col1B],  
                     marker0=marker_set[mark0B], marker1=marker_set[mark1B],
                     markersize=tagsize, t_name=connects[k][loc[1]],
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
         
       elif adjmat[k,k] == 3:
         # determine tag end points
@@ -307,10 +345,10 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
         y2 = (coordy + y1) / 2
 
         # determine marker shapes and colors
-        loc = np.where(np.array(connects[k], dtype=int) <= 0)[0]
-        val0 = np.abs(connects[k][loc[0]]) - 1
-        val1 = np.abs(connects[k][loc[1]]) - 1
-        val2 = np.abs(connects[k][loc[2]]) - 1
+        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
+        val0 = np.abs(nm_connects[k][loc[0]]) - 1
+        val1 = np.abs(nm_connects[k][loc[1]]) - 1
+        val2 = np.abs(nm_connects[k][loc[2]]) - 1
         mark0A, col0A = np.divmod(loc[0].item(), num_mcols)
         mark0B, col0B = np.divmod(loc[1].item(), num_mcols)
         mark0C, col0C = np.divmod(loc[2].item(), num_mcols)
@@ -326,14 +364,16 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     color1=marker_palette[col1A],  
                     marker0=marker_set[mark0A], marker1=marker_set[mark1A],
                     markersize=tagsize, t_name=connects[k][loc[0]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
         
         _draw_index(x0, x1, y0, y1, xf=x2, yf=y2, 
                     color0=marker_palette[col0B], 
                     color1=marker_palette[col1B],  
                     marker0=marker_set[mark0B], marker1=marker_set[mark1B],
                     markersize=tagsize, t_name=connects[k][loc[1]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
         
         _draw_index(x0p, x1p, y0p, y1p,
                     xf=x2 + np.cos(thet)*double_offset,
@@ -342,13 +382,18 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                     color1=marker_palette[col1C],  
                     marker0=marker_set[mark0C], marker1=marker_set[mark1C],
                     markersize=tagsize, t_name=connects[k][loc[2]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1)
+                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
+                    bkg_col=bkg_col)
             
       else:
-        # draw dashed index when more than four indices connect
-        plt.plot([x0, x1], [y0, y1], color='k', linewidth=4, linestyle='dashed')
-        plt.plot([x0], [y0], marker='o', markersize=tagsize + 2, color='k')
-        plt.plot([x1], [y1], marker='o', markersize=tagsize + 2, color='k')
+        _draw_index(x0, x1, y0, y1,
+                    color='k', line_type='solid',
+                    color0='k', 
+                    color1='k',  
+                    marker0='o', marker1='o',
+                    markersize=tagsize, 
+                    fontsize=fontsize, draw_labels=False, ax1=ax1,
+                    bkg_col=bkg_col, linewidth=5)
 
   # draw tensors
   for k in range(N):
@@ -365,11 +410,37 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
                 'horizontalalignment': 'center'}
     plt.title(title, fontdict=fontdict, loc='center', pad=30)
 
+  # extend the figure to make room for the legend (hacky...)
+  if col_inds:
+    xmax = max([coord[0] for coord in coords])
+    ymax = max([coord[1] for coord in coords])
+    plt.plot([xmax, xmax + legend_extend], [ymax, ymax], color=bkg_col,
+             linewidth=0, linestyle='solid')
+
   # make plot
+  curr_fig.patch.set_facecolor(bkg_col)
   plt.axis('off')
   plt.axis('scaled')
 
-  
+  # make legend
+  if col_inds:
+    all_lines = []
+    for count, cost in enumerate(bn_costs):
+      ind_line, ind_col = np.divmod(count, num_mcols)
+      line_col = marker_palette[ind_col]
+      line_type = line_set[ind_line]
+      if not isinstance(cost, str):
+        cost = "{:.2e}".format(cost)
+      all_lines.append(mlines.Line2D([], [], color=line_col, linewidth=3,
+                                     linestyle=line_type, label=cost))
+    
+    legend = plt.legend(handles=all_lines, title="costs:",
+                        fancybox=True, fontsize=0.8*fontsize, 
+                        title_fontsize=fontsize, loc='center right')
+    frame = legend.get_frame()
+    frame.set_color('darkgrey')
+    legend.get_frame().set_edgecolor('k')
+
 def _draw_tensor(ax1, center=(0,0), radius=0.5, color='white', fontsize=12, 
                 name=None):
   
@@ -392,10 +463,10 @@ def _draw_tensor(ax1, center=(0,0), radius=0.5, color='white', fontsize=12,
     t.set_path_effects([path_effects.Stroke(linewidth=2, foreground='black'),
                        path_effects.Normal()])
 
-
-def _draw_index(x0, x1, y0, y1, xf=None, yf=None, color0='k', color1='k',
-                marker0='o', marker1='o', markersize=8, t_name='', fontsize=16, 
-                draw_labels=True, ax1=None):
+def _draw_index(x0, x1, y0, y1, xf=None, yf=None, color='k', color0='k', 
+                color1='k', line_type='solid', marker0='o', marker1='o', 
+                markersize=8, t_name='', fontsize=16, draw_labels=True, 
+                ax1=None, bkg_col='w', linewidth=2):
   
   # generate coords for index label
   if xf is None:
@@ -404,7 +475,8 @@ def _draw_index(x0, x1, y0, y1, xf=None, yf=None, color0='k', color1='k',
     yf = (y0 + y1) / 2
   
   # plot indices
-  plt.plot([x0, x1], [y0, y1], color='k', linewidth=1.5)
+  plt.plot([x0, x1], [y0, y1], color=color, linewidth=linewidth,
+           linestyle=line_type)
 
   # plot 1st endpoint tags
   plt.plot([x0], [y0], marker=marker0, markersize=markersize + 2, color='k')
@@ -417,13 +489,12 @@ def _draw_index(x0, x1, y0, y1, xf=None, yf=None, color0='k', color1='k',
   # plot index label
   if draw_labels:
     t = ax1.text(xf, yf, t_name, 
-                  fontsize=fontsize, 
+                  fontsize=0.8*fontsize, 
                   horizontalalignment='center',
                   verticalalignment='center',
                   color='black')
-    t.set_path_effects([path_effects.Stroke(linewidth=4, foreground='white'),
+    t.set_path_effects([path_effects.Stroke(linewidth=4, foreground=bkg_col),
                       path_effects.Normal()])
-
 
 def _ncon_to_adjmat(labels: List[List[int]]):
   # process inputs
