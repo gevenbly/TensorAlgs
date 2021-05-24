@@ -18,16 +18,12 @@ from network_contract import pre_ncon
 def draw_network(curr_fig, connects, names=None, coords=None, cols=None, 
                  dims=None, circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
                  draw_labels=True, title=None, order=None, bkg_col='silver',
-                 col_inds=True, legend_extend=1.5):
-
+                 show_costs=False, legend_extend=1.5, spacing=0.125,
+                 env_pad=(0,0)):
+  
   # recast connects in canonical form, compute contraction list and costs
   (nm_connects, fwd_dict, back_dict, pt_cont, bn_cont, pt_costs, 
    bn_costs) = pre_ncon(connects, dims, order)
-
-  # configuration parameters
-  double_offset = 0.09 # spacing between double indices
-  triple_offset = 0.125 # spacing between triple indices
-  tol = 1e-8 # tolerance for float comparison of coords
 
   # initialize figure
   ax1 = curr_fig.add_subplot(subplot, aspect='equal')
@@ -46,7 +42,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
   num_mcols = len(marker_palette)
   marker_set = ['o', '^', 'x', 's']
   line_set = ['solid', 'dashed', 'dashdot', 'dotted']
-  
+
   # generate default names
   if names is None:
     names = [f"T{lab}" for lab in range(N)]
@@ -70,42 +66,186 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
       thet = k * angle_space + init_angle
       coords[k] = (-R * np.cos(thet), R * np.sin(thet))
 
+  # generate types: 0=circ, 1=rect, 2=env
+  env_loc = -1
+  ttypes = [0] * N
+  for count, coord in enumerate(coords):
+    if isinstance(coord,(int,float)):
+      ttypes[count] = 2
+      env_loc = count
+    elif len(coord) == 2:
+      ttypes[count] = 0
+    elif len(coord) == 4:
+      ttypes[count] = 1
+
+  # find bounding box
+  xminB = np.inf
+  yminB = np.inf
+  xmaxB = -np.inf
+  ymaxB = -np.inf
+  for count, coord in enumerate(coords):
+    if ttypes[count] != 2:
+      if len(coord) == 4:
+        xminB = min(xminB, coord[0], coord[2])
+        yminB = min(yminB, coord[1], coord[3])
+        xmaxB = max(xmaxB, coord[0], coord[2])
+        ymaxB = max(ymaxB, coord[1], coord[3])
+      elif len(coord) == 2: 
+        xminB = min(xminB, coord[0])
+        yminB = min(yminB, coord[1])
+        xmaxB = max(xmaxB, coord[0])
+        ymaxB = max(ymaxB, coord[1])
+  # coords for bounding box
+  xminB = xminB - 1 - env_pad[0]
+  xmaxB = xmaxB + 1 + env_pad[0]
+  yminB = yminB - 1 - env_pad[1]
+  ymaxB = ymaxB + 1 + env_pad[1]
+
+  if env_loc >= 0:
+    # draw the environment tensor
+    env_thick = coords[env_loc]
+    env_width = xmaxB - xminB
+    env_height = ymaxB - yminB
+    col_lab = np.mod(cols[env_loc], num_tcols)
+    ax1.add_patch(patches.Rectangle((xminB - env_thick, yminB - env_thick), 
+                                    env_width + 2*env_thick, 
+                                    env_height + 2*env_thick, edgecolor='k', 
+                                    facecolor=tensor_palette[col_lab], 
+                                    linewidth=2))
+    ax1.add_patch(patches.Rectangle((xminB, yminB), 
+                                    env_width, 
+                                    env_height, edgecolor='k', 
+                                    facecolor=bkg_col, 
+                                    linewidth=2))
+    
+    t = ax1.text(0.5*(xminB + xmaxB), ymaxB + 0.5*env_thick, names[env_loc], 
+                 fontsize=fontsize, 
+                 horizontalalignment='center',
+                 verticalalignment='center',
+                 color='white')
+    t.set_path_effects([path_effects.Stroke(linewidth=2, foreground='black'),
+                       path_effects.Normal()])
+
   # draw closed indices  
   x_residue = np.zeros(N, dtype=np.float)
   y_residue = np.zeros(N, dtype=np.float)
   for k in range(N):
     for p in range(k):
       if (adjmat[k,p] > 0):
-        # logic for determining sign of angle
-        if (coords[p][0] == coords[k][0]):
-          temp_order = coords[p][1] < coords[k][1]
-        elif (coords[p][0] < coords[k][0]):
-          temp_order = coords[p][1] <= coords[k][1]
-        else:
-          temp_order = coords[p][1] < coords[k][1]
+        # define temps for use when switching tensor order
+        k0 = k
+        p0 = p
 
-        # find angle between tensors
-        if np.abs(coords[p][1] - coords[k][1]) < tol:
-          thet = np.pi/2
-        else:
-          thet = np.arctan((coords[p][0]-coords[k][0]) / 
-                          (coords[p][1]-coords[k][1]))
+        # environment connection
+        if (ttypes[k]==2) or (ttypes[p]==2):
+          # change tensor order if necessary
+          if ttypes[k]==2:
+            k0 = p
+            p0 = k
           
-        # find coordinates between centers of connected tensors 
-        x0 = coords[k][0] + ((-1)**temp_order) * np.sin(thet) * circ_rad
-        x1 = coords[p][0] - ((-1)**temp_order) * np.sin(thet) * circ_rad
-        y0 = coords[k][1] + ((-1)**temp_order) * np.cos(thet) * circ_rad
-        y1 = coords[p][1] - ((-1)**temp_order) * np.cos(thet) * circ_rad
-        
+          # find tensor midpoints
+          if ttypes[k0]==0:
+            xmid = coords[k0][0] 
+            ymid = coords[k0][1] 
+            # find index endpoints
+            d0 = xmid - xminB
+            d1 = xmaxB - xmid
+            d2 = ymid - yminB
+            d3 = ymaxB - ymid
+            if d3 <= min(d1, d2, d0): # up facing
+              x0 = xmid
+              y0 = coords[k0][1]
+              x1 = xmid
+              y1 = ymaxB
+            elif d2 <= min(d1, d0, d3): # down facing 
+              x0 = xmid
+              y0 = coords[k0][1]
+              x1 = xmid
+              y1 = yminB
+            elif d0 <= min(d1, d2, d3): # left facing
+              x0 = coords[k0][0]
+              y0 = ymid
+              x1 = xminB
+              y1 = ymid
+            elif d1 <= min(d0, d2, d3): # right facing
+              x0 = coords[k0][0]
+              y0 = ymid
+              x1 = xmaxB
+              y1 = ymid
+            
+          elif ttypes[k0]==1:
+            xmid = 0.5 * (coords[k0][0] + coords[k0][2])
+            ymid = 0.5 * (coords[k0][1] + coords[k0][3])
+            # find index endpoints
+            d0 = xmid - xminB
+            d1 = xmaxB - xmid
+            d2 = ymid - yminB
+            d3 = ymaxB - ymid
+            if d0 < min(d1, d2, d3): # left facing
+              x0 = min(coords[k0][0], coords[k0][2])
+              y0 = ymid
+              x1 = xminB
+              y1 = ymid
+            elif d1 < min(d0, d2, d3): # right facing
+              x0 = max(coords[k0][0], coords[k0][2])
+              y0 = ymid
+              x1 = xmaxB
+              y1 = ymid
+            elif d3 < min(d1, d2, d0): # up facing
+              x0 = xmid
+              y0 = max(coords[k0][1], coords[k0][3])
+              x1 = xmid
+              y1 = ymaxB
+            else: # down facing (default)
+              x0 = xmid
+              y0 = min(coords[k0][1], coords[k0][3])
+              x1 = xmid
+              y1 = yminB
+          
+          # generate angle
+          thet = _gen_angle(x0, y0, x1, y1)
+          if ttypes[k0]==0:
+            x0 = x0 + np.cos(thet) * circ_rad
+            y0 = y0 + np.sin(thet) * circ_rad
+
+        # circle-circle connection
+        elif (ttypes[k]==0) and (ttypes[p]==0):
+          # find angle between tensors
+          x0s = coords[k][0]
+          y0s = coords[k][1]
+          x1s = coords[p][0]
+          y1s = coords[p][1]
+          thet = _gen_angle(x0s, y0s, x1s, y1s)
+          # find coordinates of index end-pointd
+          x0 = x0s + np.cos(thet) * circ_rad
+          x1 = x1s - np.cos(thet) * circ_rad
+          y0 = y0s + np.sin(thet) * circ_rad
+          y1 = y1s - np.sin(thet) * circ_rad
+          
+        # circle-rect connection
+        elif (ttypes[k] + ttypes[p])==1:
+          # change tensor order if necessary
+          if ttypes[k]==1:
+            k0 = p
+            p0 = k
+          # determine index endpoints and the angle between them
+          thet, x0, y0, x1, y1 = _endpoints_rect_circ(coords[k0], coords[p0], 
+                                                      circ_rad)
+          
+        # rect-rect connection
+        elif (ttypes[k]==1) and (ttypes[p]==1):
+          # determine index endpoints and the angle between them
+          thet, x0, y0, x1, y1 = _endpoints_rect_rect(coords[k], coords[p])
+
         # store residues for determining angles of open indices 
-        x_residue[k] = x_residue[k] + ((-1)**temp_order) * np.sin(thet) * circ_rad
-        x_residue[p] = x_residue[p] - ((-1)**temp_order) * np.sin(thet) * circ_rad
-        y_residue[k] = y_residue[k] + ((-1)**temp_order) * np.cos(thet) * circ_rad
-        y_residue[p] = y_residue[p] - ((-1)**temp_order) * np.cos(thet) * circ_rad
+        x_residue[k0] = x_residue[k0] + np.cos(thet) * circ_rad
+        x_residue[p0] = x_residue[p0] - np.cos(thet) * circ_rad
+        y_residue[k0] = y_residue[k0] + np.sin(thet) * circ_rad
+        y_residue[p0] = y_residue[p0] - np.sin(thet) * circ_rad
 
         # determine index colors and linetypes
-        if col_inds:
-          cont_inds = np.intersect1d(nm_connects[k], nm_connects[p])
+        if show_costs:
+          cont_inds = np.intersect1d(nm_connects[k0], nm_connects[p0])
           for count, inds in enumerate(bn_cont):
             if len(np.intersect1d(inds, cont_inds)) > 0:
               ind_line, ind_col = np.divmod(count, num_mcols)
@@ -116,123 +256,31 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
           line_col = 'k'
           line_type = 'solid'
 
-        if adjmat[k,p] == 1:
-          # determine tag colors and shapes
-          ind_names, pos0, pos1 = np.intersect1d(connects[k],connects[p], 
-                                                 return_indices=True)
-          mark0, col0 = np.divmod(pos0.item(), num_mcols)
-          mark1, col1 = np.divmod(pos1.item(), num_mcols)
+        # determine tag colors and shapes
+        ind_names, pos0, pos1 = np.intersect1d(connects[k0],connects[p0], 
+                                                return_indices=True)
+        num_con = adjmat[k0,p0]
+        mark0 = [0]*num_con
+        mark1 = [0]*num_con
+        color0 = [0]*num_con
+        color1 = [0]*num_con
+        for count in range(len(pos0)):
+          mtemp0, ctemp0 = np.divmod(pos0[count].item(), num_mcols)
+          mtemp1, ctemp1 = np.divmod(pos1[count].item(), num_mcols)
+          color0[count] = marker_palette[ctemp0]
+          color1[count] = marker_palette[ctemp1]
+          mark0[count] = marker_set[mtemp0]
+          mark1[count] = marker_set[mtemp1]
 
-          # draw the index
-          _draw_index(x0, x1, y0, y1,
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col0], 
-                      color1=marker_palette[col1],  
-                      marker0=marker_set[mark0], marker1=marker_set[mark1],
-                      markersize=tagsize, t_name=ind_names.item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
-          
-        elif adjmat[k,p] == 2:
-          # determine tag colors and shapes
-          ind_names, pos0, pos1 = np.intersect1d(connects[k],connects[p], 
-                                                 return_indices=True)
-          mark00, col00 = np.divmod(pos0[0].item(), num_mcols)
-          mark01, col01 = np.divmod(pos0[1].item(), num_mcols)
-          mark10, col10 = np.divmod(pos1[0].item(), num_mcols)
-          mark11, col11 = np.divmod(pos1[1].item(), num_mcols)
-
-          # determine index end points (perp shifted due to doubling)
-          x0p = x0 + np.cos(thet)*double_offset
-          x0m = x0 - np.cos(thet)*double_offset
-          y0p = y0 - np.sin(thet)*double_offset
-          y0m = y0 + np.sin(thet)*double_offset
-
-          x1p = x1 + np.cos(thet)*double_offset
-          x1m = x1 - np.cos(thet)*double_offset
-          y1p = y1 - np.sin(thet)*double_offset
-          y1m = y1 + np.sin(thet)*double_offset
-
-          # draw the indices
-          _draw_index(x0m, x1m, y0m, y1m,
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col00], 
-                      color1=marker_palette[col10], 
-                      marker0=marker_set[mark00], marker1=marker_set[mark10],
-                      markersize=tagsize, t_name=ind_names[0].item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
-
-          _draw_index(x0p, x1p, y0p, y1p,
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col01], 
-                      color1=marker_palette[col11], 
-                      marker0=marker_set[mark01], marker1=marker_set[mark11],
-                      markersize=tagsize, t_name=ind_names[1].item(), 
-                      fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
+        _draw_multi(x0, x1, y0, y1, num_inds=num_con,  
+                    color=line_col, color0=color0, color1=color1, 
+                    line_type=line_type, marker0=mark0, marker1=mark1, 
+                    markersize=tagsize, t_name=ind_names, fontsize=fontsize, 
+                    draw_labels=draw_labels, ax1=ax1, bkg_col=bkg_col, 
+                    linewidth=2, spacing=spacing)
         
-        elif adjmat[k,p] == 3:
-          # determine tag colors and shapes
-          ind_names, pos0, pos1 = np.intersect1d(connects[k],connects[p], 
-                                                 return_indices=True)
-          mark00, col00 = np.divmod(pos0[0].item(), num_mcols)
-          mark01, col01 = np.divmod(pos0[1].item(), num_mcols)
-          mark02, col02 = np.divmod(pos0[2].item(), num_mcols)
-          mark10, col10 = np.divmod(pos1[0].item(), num_mcols)
-          mark11, col11 = np.divmod(pos1[1].item(), num_mcols)
-          mark12, col12 = np.divmod(pos1[2].item(), num_mcols)
-
-          # determine index end points (perp shifted due to doubling)
-          x0p = x0 + np.cos(thet)*triple_offset
-          x0m = x0 - np.cos(thet)*triple_offset
-          y0p = y0 - np.sin(thet)*triple_offset
-          y0m = y0 + np.sin(thet)*triple_offset
-
-          x1p = x1 + np.cos(thet)*triple_offset
-          x1m = x1 - np.cos(thet)*triple_offset
-          y1p = y1 - np.sin(thet)*triple_offset
-          y1m = y1 + np.sin(thet)*triple_offset
-
-          # draw the indices
-          _draw_index(x0m, x1m, y0m, y1m, 
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col00], 
-                      color1=marker_palette[col10], 
-                      marker0=marker_set[mark00], marker1=marker_set[mark10],
-                      markersize=tagsize, t_name=ind_names[0].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
-          
-          _draw_index(x0, x1, y0, y1,
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col01], 
-                      color1=marker_palette[col11], 
-                      marker0=marker_set[mark01], marker1=marker_set[mark11],
-                      markersize=tagsize, t_name=ind_names[1].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
-
-          _draw_index(x0p, x1p, y0p, y1p,
-                      color=line_col, line_type=line_type,
-                      color0=marker_palette[col02], 
-                      color1=marker_palette[col12], 
-                      marker0=marker_set[mark02], marker1=marker_set[mark12],
-                      markersize=tagsize, t_name=ind_names[2].item(), 
-                      fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                      bkg_col=bkg_col)
-        
-        else:
-          _draw_index(x0, x1, y0, y1,
-                      color=line_col, line_type=line_type,
-                      color0='k', 
-                      color1='k',  
-                      marker0='o', marker1='o',
-                      markersize=tagsize, 
-                      fontsize=fontsize, draw_labels=False, ax1=ax1,
-                      bkg_col=bkg_col, linewidth=5)
-
   # draw open indices  
+  tol = 1e-8
   for k in range(N):
     if adjmat[k,k] > 0:
       # normalize the residue from the closed indices
@@ -244,163 +292,72 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
         # set free indices to point downwards if no residue
         res_vec = np.array([0, -1])
 
-      # logic for determining residue signs
-      coordx = coords[k][0] - res_vec[0]
-      coordy = coords[k][1] - res_vec[1]
-      if (coordx == coords[k][0]):
-        temp_order = coordy < coords[k][1]
-      elif (coordx < coords[k][0]):
-        temp_order = coordy <= coords[k][1]
-      else:
-        temp_order = coordy < coords[k][1]
+      # determine tensor midpoints
+      if ttypes[k] == 0:
+        xmid = coords[k][0]
+        ymid = coords[k][1]
+      elif ttypes[k] == 1:
+        xmid = 0.5*(coords[k][0] + coords[k][2])
+        ymid = 0.5*(coords[k][1] + coords[k][3])
 
-      # angle of open index orientation
-      if coordy == coords[k][1]:
-        thet = np.pi/2
-      else:
-        thet = np.arctan((coordx-coords[k][0]) / (coordy-coords[k][1]))
+      # determine angle of open indices
+      coordx = xmid - res_vec[0]
+      coordy = ymid - res_vec[1]
+      thet = _gen_angle(xmid, ymid, coordx, coordy)
       
       # determine end points of markers
-      x0 = coords[k][0] + ((-1)**temp_order) * np.sin(thet) * circ_rad
-      x1 = coordx - ((-1)**temp_order) * np.sin(thet) * circ_rad
-      y0 = coords[k][1] + ((-1)**temp_order) * np.cos(thet) * circ_rad
-      y1 = coordy - ((-1)**temp_order) * np.cos(thet) * circ_rad
-
-      if adjmat[k,k] == 1:
-        # determine tag colors and shapes
-        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0].item()
-        val = np.abs(nm_connects[k][loc]) - 1
-        mark0, col0 = np.divmod(loc, num_mcols)
-        mark1, col1 = np.divmod(val, num_mcols)
+      if ttypes[k] == 0:
+        x0 = coords[k][0] + np.cos(thet) * circ_rad
+        y0 = coords[k][1] + np.sin(thet) * circ_rad
+        x1 = coordx - np.cos(thet) * circ_rad
+        y1 = coordy - np.sin(thet) * circ_rad
+        xf = (coordx + x1) / 2
+        yf = (coordy + y1) / 2
+      elif ttypes[k] == 1:
+        twidth = np.abs(coords[k][0] - coords[k][2]) / 2
+        theight = np.abs(coords[k][1] - coords[k][3]) / 2
+        temp_rad = min(twidth / (np.abs(np.cos(thet)) + tol),
+                       theight / (np.abs(np.sin(thet)) + tol)) 
+        x0 = xmid + np.cos(thet) * temp_rad
+        y0 = ymid + np.sin(thet) * temp_rad
+        x1 = coordx - np.cos(thet) * circ_rad
+        y1 = coordy - np.sin(thet) * circ_rad
         xf = (coordx + x1) / 2
         yf = (coordy + y1) / 2
 
-        # draw the index
-        _draw_index(x0, x1, y0, y1, xf=xf, yf=yf,
-                    color0=marker_palette[col0], 
-                    color1=marker_palette[col1],  
-                    marker0=marker_set[mark0], marker1=marker_set[mark1],
-                    markersize=tagsize, t_name=connects[k][loc], 
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-      
-      elif adjmat[k,k] == 2:
-        # determine tag end points
-        x0p = x0 + np.cos(thet)*double_offset
-        x0m = x0 - np.cos(thet)*double_offset
-        y0p = y0 - np.sin(thet)*double_offset
-        y0m = y0 + np.sin(thet)*double_offset
+      # determine marker shapes and colors
+      num_inds = adjmat[k,k]
+      mark0 = [0] * num_inds
+      mark1 = [0] * num_inds
+      color0 = [0] * num_inds
+      color1 = [0] * num_inds
+      t_names = [0] * num_inds
+      locs = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
+      for count, loc in enumerate(locs):
+        val0 = np.abs(nm_connects[k][loc]) - 1
+        mar0, col0 = np.divmod(loc, num_mcols)
+        mar1, col1 = np.divmod(val0, num_mcols)
+        color0[count] = marker_palette[col0]
+        color1[count] = marker_palette[col1]
+        mark0[count] = marker_set[mar0]
+        mark1[count] = marker_set[mar1]
+        t_names[count] = connects[k][loc]
 
-        x1p = x1 + np.cos(thet)*double_offset
-        x1m = x1 - np.cos(thet)*double_offset
-        y1p = y1 - np.sin(thet)*double_offset
-        y1m = y1 + np.sin(thet)*double_offset
-
-        x2 = (coordx + x1) / 2 
-        y2 = (coordy + y1) / 2
-
-        # determine marker shapes and colors
-        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
-        val0 = np.abs(nm_connects[k][loc[0]]) - 1
-        val1 = np.abs(nm_connects[k][loc[1]]) - 1
-        mark0A, col0A = np.divmod(loc[0].item(), num_mcols)
-        mark0B, col0B = np.divmod(loc[1].item(), num_mcols)
-        mark1A, col1A = np.divmod(val0, num_mcols)
-        mark1B, col1B = np.divmod(val1, num_mcols)
-
-        # draw the indices
-        _draw_index(x0m, x1m, y0m, y1m,
-                    xf=x2 - np.cos(thet)*double_offset,
-                    yf=y2 + np.sin(thet)*double_offset,
-                    color0=marker_palette[col0A], 
-                    color1=marker_palette[col1A],  
-                    marker0=marker_set[mark0A], marker1=marker_set[mark1A],
-                    markersize=tagsize, t_name=connects[k][loc[0]],
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-        
-        _draw_index(x0p, x1p, y0p, y1p,
-                    xf=x2 + np.cos(thet)*double_offset,
-                    yf=y2 - np.sin(thet)*double_offset,
-                    color0=marker_palette[col0B], 
-                    color1=marker_palette[col1B],  
-                    marker0=marker_set[mark0B], marker1=marker_set[mark1B],
-                    markersize=tagsize, t_name=connects[k][loc[1]],
-                    fontsize=fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-        
-      elif adjmat[k,k] == 3:
-        # determine tag end points
-        x0p = x0 + np.cos(thet)*triple_offset
-        x0m = x0 - np.cos(thet)*triple_offset
-        y0p = y0 - np.sin(thet)*triple_offset
-        y0m = y0 + np.sin(thet)*triple_offset
-
-        x1p = x1 + np.cos(thet)*triple_offset
-        x1m = x1 - np.cos(thet)*triple_offset
-        y1p = y1 - np.sin(thet)*triple_offset
-        y1m = y1 + np.sin(thet)*triple_offset
-        
-        x2 = (coordx + x1) / 2 
-        y2 = (coordy + y1) / 2
-
-        # determine marker shapes and colors
-        loc = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
-        val0 = np.abs(nm_connects[k][loc[0]]) - 1
-        val1 = np.abs(nm_connects[k][loc[1]]) - 1
-        val2 = np.abs(nm_connects[k][loc[2]]) - 1
-        mark0A, col0A = np.divmod(loc[0].item(), num_mcols)
-        mark0B, col0B = np.divmod(loc[1].item(), num_mcols)
-        mark0C, col0C = np.divmod(loc[2].item(), num_mcols)
-        mark1A, col1A = np.divmod(val0, num_mcols)
-        mark1B, col1B = np.divmod(val1, num_mcols)
-        mark1C, col1C = np.divmod(val2, num_mcols)
-
-        # draw the indices
-        _draw_index(x0m, x1m, y0m, y1m,
-                    xf=x2 - np.cos(thet)*double_offset,
-                    yf=y2 + np.sin(thet)*double_offset,
-                    color0=marker_palette[col0A], 
-                    color1=marker_palette[col1A],  
-                    marker0=marker_set[mark0A], marker1=marker_set[mark1A],
-                    markersize=tagsize, t_name=connects[k][loc[0]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-        
-        _draw_index(x0, x1, y0, y1, xf=x2, yf=y2, 
-                    color0=marker_palette[col0B], 
-                    color1=marker_palette[col1B],  
-                    marker0=marker_set[mark0B], marker1=marker_set[mark1B],
-                    markersize=tagsize, t_name=connects[k][loc[1]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-        
-        _draw_index(x0p, x1p, y0p, y1p,
-                    xf=x2 + np.cos(thet)*double_offset,
-                    yf=y2 - np.sin(thet)*double_offset,
-                    color0=marker_palette[col0C], 
-                    color1=marker_palette[col1C],  
-                    marker0=marker_set[mark0C], marker1=marker_set[mark1C],
-                    markersize=tagsize, t_name=connects[k][loc[2]],
-                    fontsize=0.8*fontsize, draw_labels=draw_labels, ax1=ax1,
-                    bkg_col=bkg_col)
-            
-      else:
-        _draw_index(x0, x1, y0, y1,
-                    color='k', line_type='solid',
-                    color0='k', 
-                    color1='k',  
-                    marker0='o', marker1='o',
-                    markersize=tagsize, 
-                    fontsize=fontsize, draw_labels=False, ax1=ax1,
-                    bkg_col=bkg_col, linewidth=5)
+      # draw the index
+      _draw_multi(x0, x1, y0, y1, xf=xf, yf=yf, num_inds=num_inds,  
+                  color0=color0, color1=color1, 
+                  marker0=mark0, marker1=mark1, 
+                  markersize=tagsize, t_name=t_names, 
+                  fontsize=fontsize, draw_labels=draw_labels, ax1=ax1, 
+                  bkg_col=bkg_col, linewidth=2, spacing=spacing)
 
   # draw tensors
   for k in range(N):
-    col_lab = np.mod(cols[k], num_tcols)
-    _draw_tensor(ax1, center=coords[k], radius=circ_rad, 
-                 color=tensor_palette[col_lab], 
-                 name=names[k], fontsize=1.2*fontsize)
+    if ttypes[k] != 2: 
+      col_lab = np.mod(cols[k], num_tcols)
+      _draw_tensor(ax1, coords=coords[k], radius=circ_rad, 
+                  color=tensor_palette[col_lab], 
+                  name=names[k], fontsize=1.2*fontsize)
 
   # make title
   if title is not None:
@@ -411,10 +368,8 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
     plt.title(title, fontdict=fontdict, loc='center', pad=30)
 
   # extend the figure to make room for the legend (hacky...)
-  if col_inds:
-    xmax = max([coord[0] for coord in coords])
-    ymax = max([coord[1] for coord in coords])
-    plt.plot([xmax, xmax + legend_extend], [ymax, ymax], color=bkg_col,
+  if show_costs:
+    plt.plot([xmaxB, xmaxB + legend_extend], [ymaxB, ymaxB], color=bkg_col,
              linewidth=0, linestyle='solid')
 
   # make plot
@@ -423,7 +378,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
   plt.axis('scaled')
 
   # make legend
-  if col_inds:
+  if show_costs:
     all_lines = []
     for count, cost in enumerate(bn_costs):
       ind_line, ind_col = np.divmod(count, num_mcols)
@@ -441,60 +396,246 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
     frame.set_color('darkgrey')
     legend.get_frame().set_edgecolor('k')
 
-def _draw_tensor(ax1, center=(0,0), radius=0.5, color='white', fontsize=12, 
+def _endpoints_rect_circ(coords0, coords1, circ_rad):
+  " Determine the position of indices connecting circle and rectangle "
+
+  # find angle between tensors
+  xmin = min(coords1[0], coords1[2])
+  xmax = max(coords1[0], coords1[2])
+  ymin = min(coords1[1], coords1[3])
+  ymax = max(coords1[1], coords1[3])
+  xc = coords0[0]
+  yc = coords0[1]
+
+  if xc < xmin:
+    if yc < ymin: # type7
+      thet = _gen_angle(xc, yc, xmin, ymin)
+      x1 = xmin
+      y1 = ymin
+    elif yc > ymax:
+      # type1
+      thet = _gen_angle(xc, yc, xmin, ymax)
+      x1 = xmin
+      y1 = ymax
+    else: # type4
+      thet = 0
+      x1 = xmin
+      y1 = yc
+  elif xc > xmax:
+    if yc < ymin: # type9
+      thet = _gen_angle(xc, yc, xmax, ymin)
+      x1 = xmax
+      y1 = ymin
+    elif yc > ymax: # type3
+      thet = _gen_angle(xc, yc, xmax, ymax)
+      x1 = xmax
+      y1 = ymax
+    else: # type6
+      thet = np.pi 
+      x1 = xmax
+      y1 = yc
+  else:
+    if yc < ymin: # type8
+      thet = np.pi / 2
+      x1 = xc
+      y1 = ymin
+    elif yc > ymax: # type2
+      thet = -np.pi / 2
+      x1 = xc
+      y1 = ymax
+    else: # type5
+      xmid = (xmin + xmax) / 2
+      ymid = (ymin + ymax) / 2
+      thet = _gen_angle(xc, yc, xmid, ymid)
+
+  # find coordinates between centers of connected tensors 
+  x0 = xc + np.cos(thet) * circ_rad
+  y0 = yc + np.sin(thet) * circ_rad
+
+  return thet, x0, y0, x1, y1
+
+def _endpoints_rect_rect(coords0, coords1):
+  " Determine the position of indices connecting two rectangular shapes "
+
+  # determine boundings
+  xkmin = min(coords0[0], coords0[2])
+  xkmax = max(coords0[0], coords0[2])
+  ykmin = min(coords0[1], coords0[3])
+  ykmax = max(coords0[1], coords0[3])
+
+  xpmin = min(coords1[0], coords1[2])
+  xpmax = max(coords1[0], coords1[2])
+  ypmin = min(coords1[1], coords1[3])
+  ypmax = max(coords1[1], coords1[3])
+
+  if ykmax < ypmin: # types 7,8,9
+    y0 = ykmax
+    y1 = ypmin
+    if xkmax < xpmin: # type 7
+      x0 = xkmax
+      x1 = xpmin
+    elif xkmin > xpmax: # type 9
+      x0 = xkmin
+      x1 = xpmax
+    else: # type 8
+      xcmin = max(xkmin, xpmin)
+      xcmax = min(xkmax, xpmax)
+      x0 = 0.5 * (xcmin + xcmax)
+      x1 = 0.5 * (xcmin + xcmax)
+  elif ykmin > ypmax: # types 1,2,3
+    y0 = ykmin
+    y1 = ypmax
+    if xkmax < xpmin: # type 1
+      x0 = xkmax
+      x1 = xpmin
+    elif xkmin > xpmax: # type 3
+      x0 = xkmin
+      x1 = xpmax
+    else: # type 2
+      xcmin = max(xkmin, xpmin)
+      xcmax = min(xkmax, xpmax)
+      x0 = 0.5 * (xcmin + xcmax)
+      x1 = 0.5 * (xcmin + xcmax)
+  else: # types 4,5,6
+    ycmin = max(ykmin, ypmin)
+    ycmax = min(ykmax, ypmax)
+    y0 = 0.5 * (ycmin + ycmax)
+    y1 = 0.5 * (ycmin + ycmax)
+    if xkmax < xpmin: # type 4
+      x0 = xkmax
+      x1 = xpmin
+    elif xkmax > xpmin: # type 6
+      x0 = xkmin
+      x1 = xpmax
+    else: # type 5
+      xcmin = max(xkmin, xpmin)
+      xcmax = min(xkmax, xpmax)
+      x0 = 0.5 * (xcmin + xcmax)
+      x1 = 0.5 * (xcmin + xcmax)
+
+  thet = _gen_angle(x0, y0, x1, y1)
+  
+  return thet, x0, y0, x1, y1
+
+def _draw_tensor(ax1, coords=(0,0), radius=0.5, color='white', fontsize=12, 
                 name=None):
   
-  ax1.add_patch(patches.Circle(center,
-                               radius=radius,
-                               color=color, 
-                               linewidth=0, 
-                               fill=True))
-  
-  ax1.add_patch(patches.Circle(center,
-                               radius=radius,
-                               color='k', 
-                               linewidth=2, 
-                               fill=False))
+  if len(coords)==4:
+    # draw rectangle
+    x0 = min(coords[0], coords[2])
+    y0 = min(coords[1], coords[3])
+    rwidth = np.abs(coords[0] - coords[2])
+    rheight = np.abs(coords[1] - coords[3])
+    ax1.add_patch(patches.Rectangle((x0,y0), rwidth, rheight, edgecolor='k',
+                                    facecolor=color, linewidth=2))
+    xmid = 0.5 * (coords[0] + coords[2])
+    ymid = 0.5 * (coords[1] + coords[3])
+
+  else:
+    # draw circle
+    ax1.add_patch(patches.Circle(coords,
+                                radius=radius,
+                                color=color, 
+                                linewidth=0, 
+                                fill=True))
+    
+    ax1.add_patch(patches.Circle(coords,
+                                radius=radius,
+                                color='k', 
+                                linewidth=2, 
+                                fill=False))
+    xmid = coords[0]
+    ymid = coords[1]
+    
   if name is not None:
-    t = ax1.text(center[0], center[1], name, fontsize=fontsize, 
+    t = ax1.text(xmid, ymid, name, fontsize=fontsize, 
              horizontalalignment='center',
              verticalalignment='center',
              color='white')
     t.set_path_effects([path_effects.Stroke(linewidth=2, foreground='black'),
                        path_effects.Normal()])
 
-def _draw_index(x0, x1, y0, y1, xf=None, yf=None, color='k', color0='k', 
-                color1='k', line_type='solid', marker0='o', marker1='o', 
-                markersize=8, t_name='', fontsize=16, draw_labels=True, 
-                ax1=None, bkg_col='w', linewidth=2):
+def _draw_multi(x0, x1, y0, y1, num_inds=1, xf=None, yf=None, color='k', 
+                color0=None, color1=None, line_type=None, marker0=None, 
+                marker1=None, markersize=8, t_name=None, fontsize=16, 
+                draw_labels=True, ax1=None, bkg_col='w', linewidth=2, 
+                spacing=0.1):
   
+  # scale font smaller for compound indices 
+  fontsize = (1 / (0.75 + 0.25*num_inds)) * fontsize
+  spacing = (1 / (0.75 + 0.25*num_inds)) * spacing
+
+  # find angle between tensors
+  tol = 1e-8
+  if np.abs(y1 - y0) < tol:
+    thet = np.pi/2
+  else:
+    thet = np.arctan((x1 - x0) / (y1 - y0))
+
   # generate coords for index label
   if xf is None:
     xf = (x0 + x1) / 2
   if yf is None:
     yf = (y0 + y1) / 2
   
-  # plot indices
-  plt.plot([x0, x1], [y0, y1], color=color, linewidth=linewidth,
-           linestyle=line_type)
+  offsets = spacing * (np.arange(num_inds) - (num_inds - 1) / 2)
+  for count, offset in enumerate(offsets):
+    # offset indices
+    x0p = x0 + np.cos(thet)*offset
+    x1p = x1 + np.cos(thet)*offset
+    xfp = xf + np.cos(thet)*offset
+    y0p = y0 - np.sin(thet)*offset
+    y1p = y1 - np.sin(thet)*offset
+    yfp = yf - np.sin(thet)*offset
+    
+    # plot indices
+    plt.plot([x0p, x1p], [y0p, y1p], color=color, linewidth=linewidth,
+            linestyle=line_type)
 
-  # plot 1st endpoint tags
-  plt.plot([x0], [y0], marker=marker0, markersize=markersize + 2, color='k')
-  plt.plot([x0], [y0], marker=marker0, markersize=markersize, color=color0)
+    # plot 1st endpoint tags
+    plt.plot([x0p], [y0p], marker=marker0[count], 
+             markersize=markersize + 2, color='k')
+    plt.plot([x0p], [y0p], marker=marker0[count], 
+             markersize=markersize, color=color0[count])
+    
+    # plot 2nd endpoint tags
+    plt.plot([x1p], [y1p], marker=marker1[count], 
+             markersize=markersize + 2, color='k')
+    plt.plot([x1p], [y1p], marker=marker1[count], 
+             markersize=markersize, color=color1[count])
   
-  # plot 2nd endpoint tags
-  plt.plot([x1], [y1], marker=marker1, markersize=markersize + 2, color='k')
-  plt.plot([x1], [y1], marker=marker1, markersize=markersize, color=color1)
-  
-  # plot index label
-  if draw_labels:
-    t = ax1.text(xf, yf, t_name, 
-                  fontsize=0.8*fontsize, 
-                  horizontalalignment='center',
-                  verticalalignment='center',
-                  color='black')
-    t.set_path_effects([path_effects.Stroke(linewidth=4, foreground=bkg_col),
-                      path_effects.Normal()])
+    # plot index label
+    if draw_labels:
+      t = ax1.text(xfp, yfp, t_name[count], 
+                    fontsize=fontsize, 
+                    horizontalalignment='center',
+                    verticalalignment='center',
+                    color='black')
+      t.set_path_effects([path_effects.Stroke(linewidth=4, foreground=bkg_col),
+                        path_effects.Normal()])
+
+def _gen_angle(x0,y0,x1,y1):
+  """ Generate angle between points relative to the +ve x-axis"""
+
+  tol = 1e-8
+  if np.abs(x0 - x1) < tol:
+    if np.abs(y0 - y1) < tol:
+      thet = 0
+    elif y0 < y1:
+      thet = np.pi / 2
+    else:
+      thet = -np.pi / 2
+  elif x0 < x1:
+    thet = np.arctan((y1 - y0) / (x1 - x0))
+  else:
+    if y0 < y1:
+      thet = np.pi - np.arctan((y1 - y0) / (x0 - x1))
+    elif y1 < y0:
+      thet = -np.pi - np.arctan((y1 - y0) / (x0 - x1))
+    else:
+      thet = np.pi
+
+  return thet
 
 def _ncon_to_adjmat(labels: List[List[int]]):
   # process inputs
