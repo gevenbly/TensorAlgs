@@ -19,7 +19,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
                  dims=None, circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
                  draw_labels=True, title=None, order=None, bkg_col='silver',
                  show_costs=False, legend_extend=1.5, spacing=0.125,
-                 env_pad=(0,0)):
+                 env_pad=(0,0), linewidth=3):
   
   # recast connects in canonical form, compute contraction list and costs
   (nm_connects, fwd_dict, back_dict, pt_cont, bn_cont, pt_costs, 
@@ -277,7 +277,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
                     line_type=line_type, marker0=mark0, marker1=mark1, 
                     markersize=tagsize, t_name=ind_names, fontsize=fontsize, 
                     draw_labels=draw_labels, ax1=ax1, bkg_col=bkg_col, 
-                    linewidth=2, spacing=spacing)
+                    linewidth=linewidth, spacing=spacing)
         
   # draw open indices  
   tol = 1e-8
@@ -349,7 +349,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
                   marker0=mark0, marker1=mark1, 
                   markersize=tagsize, t_name=t_names, 
                   fontsize=fontsize, draw_labels=draw_labels, ax1=ax1, 
-                  bkg_col=bkg_col, linewidth=2, spacing=spacing)
+                  bkg_col=bkg_col, linewidth=linewidth, spacing=spacing)
 
   # draw tensors
   for k in range(N):
