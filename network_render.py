@@ -15,7 +15,7 @@ from matplotlib import patches
 from typing import Optional, List, Union, Tuple
 from network_contract import pre_ncon
 
-def draw_network(curr_fig, connects, names=None, coords=None, cols=None, 
+def draw_network(curr_fig, connects, names=None, coords=None, colors=None, 
                  dims=None, circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
                  draw_labels=True, title=None, order=None, bkg_col='silver',
                  show_costs=False, legend_extend=1.5, spacing=0.125,
@@ -48,13 +48,13 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
     names = [f"T{lab}" for lab in range(N)]
 
   # generate default tensor colors
-  if cols is None:
+  if colors is None:
     unique_names = []
     for name in names:
       if name not in unique_names:
           unique_names.append(name)
     name_dict = dict(zip(unique_names, np.arange(len(unique_names))))
-    cols = [name_dict[name] for name in names]
+    colors = [name_dict[name] for name in names]
   
   # generate default coords
   if coords is None:
@@ -106,7 +106,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
     env_thick = coords[env_loc]
     env_width = xmaxB - xminB
     env_height = ymaxB - yminB
-    col_lab = np.mod(cols[env_loc], num_tcols)
+    col_lab = np.mod(colors[env_loc], num_tcols)
     ax1.add_patch(patches.Rectangle((xminB - env_thick, yminB - env_thick), 
                                     env_width + 2*env_thick, 
                                     env_height + 2*env_thick, edgecolor='k', 
@@ -354,7 +354,7 @@ def draw_network(curr_fig, connects, names=None, coords=None, cols=None,
   # draw tensors
   for k in range(N):
     if ttypes[k] != 2: 
-      col_lab = np.mod(cols[k], num_tcols)
+      col_lab = np.mod(colors[k], num_tcols)
       _draw_tensor(ax1, coords=coords[k], radius=circ_rad, 
                   color=tensor_palette[col_lab], 
                   name=names[k], fontsize=1.2*fontsize)
