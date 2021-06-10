@@ -8,7 +8,7 @@ Original file is located at
 """
 
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Union, Tuple
 
 def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
   """
