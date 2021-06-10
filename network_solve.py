@@ -10,6 +10,80 @@ Original file is located at
 import numpy as np
 from typing import Optional
 
+def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
+  """
+  Produces a `ncon` compatible index contraction order from the sequence of
+  pairwise contractions.
+  Args:
+    labels: list of the tensor connections (in standard `ncon` format).
+    orders: array of dim (2,N-1) specifying the set of N-1 pairwise
+      tensor contractions.
+  Returns:
+    np.ndarray: the contraction order (in `ncon` format).
+  """
+
+  N = len(labels)
+  orders = orders.reshape(2, N - 1)
+  new_labels = [np.array(labels[i]) for i in range(N)]
+  con_order = np.zeros([0], dtype=int)
+
+  # remove all partial trace indices
+  for counter, temp_label in enumerate(new_labels):
+    uni_inds, counts = np.unique(temp_label, return_counts=True)
+    tr_inds = uni_inds[np.flatnonzero(counts == 2)]
+    con_order = np.concatenate((con_order, tr_inds))
+    new_labels[counter] = temp_label[np.isin(temp_label, uni_inds[counts == 1])]
+
+  for i in range(N - 1):
+    # find common indices between tensor pair
+    cont_many, A_cont, B_cont = np.intersect1d(
+        new_labels[orders[0, i]], new_labels[orders[1, i]], return_indices=True)
+    temp_labels = np.append(
+        np.delete(new_labels[orders[0, i]], A_cont),
+        np.delete(new_labels[orders[1, i]], B_cont))
+    con_order = list(np.concatenate((con_order, cont_many), axis=0))
+
+    # build new set of labels
+    new_labels[orders[0, i]] = temp_labels
+    del new_labels[orders[1, i]]
+
+  return con_order
+
+def ncon_to_weighted_adj(tensors: List[np.ndarray], labels: List[List[int]]):
+  """
+  Create a log-adjacency matrix, where element [i,j] is the log10 of the total
+  dimension of the indices connecting ith and jth tensors, for a network
+  defined in the `ncon` syntax.
+  Args:
+    tensors: list of the tensors in the network.
+    labels: list of the tensor connections (in standard `ncon` format).
+  Returns:
+    np.ndarray: the log-adjacency matrix.
+  """
+  # process inputs
+  N = len(labels)
+  ranks = [len(labels[i]) for i in range(N)]
+  flat_labels = np.hstack([labels[i] for i in range(N)])
+  tensor_counter = np.hstack(
+      [i * np.ones(ranks[i], dtype=int) for i in range(N)])
+  index_counter = np.hstack([np.arange(ranks[i]) for i in range(N)])
+
+  # build log-adjacency index-by-index
+  log_adj = np.zeros([N, N])
+  unique_labels = np.unique(flat_labels)
+  for ele in unique_labels:
+    # identify tensor/index location of each edge
+    tnr = tensor_counter[flat_labels == ele]
+    ind = index_counter[flat_labels == ele]
+    if len(ind) == 1:  # external index
+      log_adj[tnr[0], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
+    elif len(ind) == 2:  # internal index
+      if tnr[0] != tnr[1]:  # ignore partial traces
+        log_adj[tnr[0], tnr[1]] += np.log10(tensors[tnr[0]].shape[ind[0]])
+        log_adj[tnr[1], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
+
+  return log_adj
+
 def full_solve_complete(log_adj: np.ndarray,
                         cost_bound: Optional[int] = None,
                         max_branch: Optional[int] = None):
