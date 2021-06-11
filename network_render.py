@@ -14,7 +14,7 @@ import matplotlib.lines as mlines
 from matplotlib import patches
 from typing import Optional, List, Union, Tuple
 from network_contract import (
-    make_canon_connects, make_canon_dims, check_network)
+    make_canon_connects, make_canon_dims, check_network, compute_costs)
 
 def draw_network(connects, names='default', coords=None, colors=None, 
                  dims=None, circ_rad=0.3, fontsize=16, tagsize=8, 
