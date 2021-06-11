@@ -11,6 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 import matplotlib.lines as mlines
+import ipywidgets as widgets
+from IPython.display import display
 from matplotlib import patches
 from typing import Optional, List, Union, Tuple
 from network_contract import (
