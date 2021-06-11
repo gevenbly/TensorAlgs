@@ -9,24 +9,45 @@ Original file is located at
 
 import numpy as np
 from typing import Optional, List, Union, Tuple
-from network_solve import full_solve_complete
+from network_solve import (
+    full_solve_complete, ord_to_ncon, call_solver, ncon_to_weighted_adj)
 
-def xcon(tensors_in, connects_in, order=None, which_envs=None, allow_str=True, 
-         check_validity=True, return_costs=False, solver=None):
+def xcon(tensors_in, connects_in, order=None, open_order=None, which_envs=None, 
+         standardize_inputs=True, perform_check=True, return_info=False, 
+         solver=None):
   """ 
-  eXtreme CONtractor. Upgrades `ncon` in numerous ways, including (i) support
-  for network labels as strings, (ii) incorporating auto-differentiation to 
-  determine the single tensor environments. 
+  Xtreme CONtractor: Upgrades `ncon` in numerous ways, including (i) support
+  for network labels as strings, (ii) incorporation auto-differentiation to 
+  determine the single tensor environments, (iii) incorporation of a solver to
+  find the optimal contraction order. Uses smart recycling of intermediate 
+  tensors when computing multiple enviornments simultaneously, allowing for 
+  a more efficient evaluation as compared to evaluating each environment 
+  separately. 
   """
-  # todo: final_order, partial trace
 
   # duplicate input list
   tensors = [tensor for tensor in tensors_in]
 
-  # normalize connection labels
-  if allow_str:
-    # build dictionary between original and canonical labels
-    connects, fwd_dict, rev_dict, npos, nneg = make_cannon_connects(connects_in)
+  # deal with single environment case separately
+  if isinstance(which_envs,list):
+    if len(which_envs) == 1:
+      which_envs = which_envs[0]
+  if isinstance(which_envs, int):
+    # generate new connects and order for network with vacancy
+    connects_new, order_new, open_ord = remove_tensor(
+        connects_in, which_envs, order=order)
+
+    # contract network with vacancy
+    del tensors[which_envs]
+    return xcon(tensors, connects_new, order=order_new, 
+                standardize_inputs=False, perform_check=perform_check, 
+                return_info=return_info, solver=solver, 
+                open_order=open_order)
+  
+  # standardize connection labels
+  if standardize_inputs:
+    connects, fwd_dict, rev_dict, npos, nneg = (
+        make_canon_connects(connects_in, order=order, open_order=open_order))
   else:
     connects = [np.array(connect, dtype=int) for connect in connects_in]
   flat_connects = np.concatenate(connects)
@@ -36,27 +57,18 @@ def xcon(tensors_in, connects_in, order=None, which_envs=None, allow_str=True,
   if order is None:
     order_new = uni_connects[uni_connects > 0]
   else:
-    if allow_str:
-      order_new = np.array([fwd_dict[ele] for ele in order])
+    if standardize_inputs:
+      order_new = np.array([fwd_dict[ele] for ele in order], dtype=int)
     else:
-      order_new = np.array([ele for ele in order])
+      order_new = np.array([ele for ele in order], dtype=int)
 
   # check validity of network
-  if check_validity:
+  if perform_check:
     dims = [tensor.shape for tensor in tensors]
-    if allow_str:
-      check_inputs(connects, dims, order_new, rev_dict=rev_dict)
+    if standardize_inputs:
+      check_network(connects, dims, order_new, rev_dict=rev_dict)
     else:
-      check_inputs(connects, dims, order_new)
-
-  # compute contraction costs
-  if return_costs:
-    # identify contraction indices
-    pt_cont, bn_cont = identify_cont_labels(connects, order_new)
-
-    # compute contraction costs
-    pt_costs, bn_costs = compute_costs(connects, dims, pt_cont, bn_cont)
-    tot_costs = sum(pt_costs) + sum(bn_costs)
+      check_network(connects, dims, order_new)
 
   # solve for optimal contraction order
   if solver is not None:
@@ -64,38 +76,44 @@ def xcon(tensors_in, connects_in, order=None, which_envs=None, allow_str=True,
       max_branch = 1
     elif solver == 'full':
       max_branch = None
-    elif isinstance(solver,int):
+    elif isinstance(solver, int):
       max_branch = solver
-    order_new, _, is_optimal = ncon_solver(tensors, connects, max_branch)
-  
-  # do partial traces
-  
+    order_new = solve_order(tensors, connects, max_branch, order=order_new)[0]
+
+  # use simple contraction scheme if envs are not required
+  if which_envs is None:
+    return ncon(tensors, connects, order=order_new, perform_check=False,
+                return_info=return_info)
+
+  # do all partial traces
+  tot_cost = 0
+  for ele in range(len(tensors)):
+    num_cont = len(connects[ele]) - len(np.unique(connects[ele]))
+    if num_cont > 0:
+      tensors[ele], connects[ele], cont_ind, cost = partial_trace(
+          connects[ele], tensor=tensors[ele])
+      order_new = np.delete(
+          order_new, np.intersect1d(
+              order_new, cont_ind, return_indices=True)[1])
+      tot_cost += cost
+      
   # check whether open and, if not, whether scalar
+  N = len(connects) 
   if min(flat_connects) <= 0:
-    is_open = True
-    is_scalar = False
-    if which_envs is not None:
-      raise ValueError(
+    raise ValueError(
         'Calculations using `which_envs` not available for open networks.')
-    else:
-      tensors.append(np.ones(1))
-      connects.append(np.ones(0, dtype=int))
-      N = len(connects) 
-      which_envs = [N-1]
   else:
-    N = len(connects) 
-    is_open = False
     if which_envs is None:
       is_scalar = True
       which_envs = [0]
       tensor_keep = tensors[0]
     else:
       is_scalar = False
-      if isinstance(which_envs, int):
-        which_envs = [which_envs] 
   
   # find node representation of contraction
-  nodes = find_nodes(connects, order_new)
+  dims = [np.array(tensor.shape, dtype=int) for tensor in tensors]
+  nodes, temp_cost = find_nodes(connects, order_new, dims=dims)
+  tot_cost += temp_cost
   node_labs, needed_conts = reorder_nodes(nodes, which_envs)
   common_nodes, temp_locs = np.intersect1d(node_labs, 
                                            2**np.arange(N, dtype=np.uint64), 
@@ -120,250 +138,305 @@ def xcon(tensors_in, connects_in, order=None, which_envs=None, allow_str=True,
                         node_labs, nodes_occupied))
 
   # reorder output tensor list and do final permutation
-  if len(which_envs) == 1:
-    if is_open:
-      # take final ordering from normal order
-      perm_vecs = np.argsort(connects_all[0])[::-1]
-    else:
-      # take final ordering from removed tensor
-      _, a_perm, b_perm = np.intersect1d(connects_all[0], connects[which_envs[0]], return_indices=True)
-      perm_vecs = a_perm[b_perm]
-
-    tensors_all = np.transpose(tensors_all[0], perm_vecs)
-    if is_scalar:
-      # do final contraction to a scalar
-      ax = tuple(range(np.ndim(tensor_keep)))
-      tensors_all = np.tensordot(tensor_keep, tensors_all,axes=(ax,ax)).item()
+  env_order = np.array([(2**N - 2**env - 1) for env in which_envs], 
+                        dtype=np.uint64)
+  env_perm = [np.where(node_labs==env)[0].item() for env in env_order]
+  all_perms = []
+  for k in range(len(which_envs)):
+    perm_temp = [np.where(connects_all[env_perm[k]] == 
+                          connects[which_envs[k]][p])[0].item() for 
+                 p in range(len(connects[which_envs[k]]))] 
+    all_perms.append(perm_temp)
+    
+  tensors_all[:] = [np.transpose(tensors_all[env_perm[k]], all_perms[k]) for 
+                    k in range(len(env_perm))]
+  
+  if return_info:
+    if standardize_inputs:
+      order_new = [rev_dict[ele] for ele in order_new]
+    return tensors_all, order_new, tot_cost
   else:
-    env_order = np.array([(2**N - 2**env - 1) for env in which_envs], 
-                         dtype=np.uint64)
-    env_perm = [np.where(node_labs==env)[0].item() for env in env_order]
-    a_perm = []
-    b_perm = []
-    for k in range(len(which_envs)):
-      _, a_temp, b_temp = np.intersect1d(connects_all[env_perm[k]], 
-                                         connects[which_envs[k]], 
-                                         return_indices=True)
-      a_perm.append(a_temp)
-      b_perm.append(b_temp)
+    return tensors_all
 
-    tensors_all[:] = [np.transpose(tensors_all[env_perm[k]],a_perm[k][b_perm[k]]
-        ) for k in range(len(env_perm))]
+def find_nodes(connects, order, dims=None):
+  """ 
+  Find the node ordering of a network. Requires std input of connects.
+  """
+  tot_cost = 0;
+  tconnects = [np.array(connect, dtype=int) for connect in connects]
+  torder = [ele for ele in order]
+  
+  N = len(tconnects) 
+  temp_nodes = np.zeros(3, dtype=np.uint64)
+  nodes = np.zeros((N-2, 3), dtype=np.uint64)
+  node_labs = 2**(np.arange(N, dtype=np.uint64))
+  for count in range(N-2):
+    locs = [ele for ele in range(len(tconnects)) if 
+            sum(tconnects[ele] == torder[0]) > 0]
+    cont_many, A_cont, B_cont = np.intersect1d(
+        tconnects[locs[0]],
+        tconnects[locs[1]],
+        assume_unique=True,
+        return_indices=True)
 
-  if solver is not None:
-    if return_costs:
-      return tensors_all, order_new, tot_costs
-    else:
-      return tensors_all, order_new
-  else:
-    if return_costs:
-      return tensors_all, tot_costs
-    else:
-      return tensors_all
+    temp_nodes[0] = node_labs[locs[0]]
+    temp_nodes[1] = node_labs[locs[1]]
+    temp_nodes[2] = 2**N - node_labs[locs[0]] - node_labs[locs[1]] - 1
+    nodes[count, :] = np.sort(temp_nodes)
 
-def ncon_remove(connects_in, which_env, order=None, allow_str=True):
+    # compute contraction costs
+    if dims is not None:
+      shp0 = np.array(dims[locs[0]], dtype=int)
+      shp1 = np.array(dims[locs[1]], dtype=int)
+      tot_cost += np.prod(shp0)*np.prod(shp1) // np.prod(
+          shp0[np.array(A_cont, dtype=int)])
 
-  # normalize connection labels
-  fin_connects = [connect for connect in connects_in]
+    tconnects.append(np.concatenate((
+      np.delete(tconnects[locs[0]], A_cont),
+      np.delete(tconnects[locs[1]], B_cont))))
+    del tconnects[locs[1]]
+    del tconnects[locs[0]]
+    if dims is not None:
+      dims.append(np.concatenate((
+        np.delete(dims[locs[0]], A_cont),
+        np.delete(dims[locs[1]], B_cont))))
+      del dims[locs[1]]
+      del dims[locs[0]]
+
+    node_labs = np.append(node_labs, node_labs[locs[0]] + node_labs[locs[1]])
+    node_labs = np.delete(node_labs, [locs[0], locs[1]])
+
+    torder = [lab for lab in torder if sum(cont_many==lab)==0]
+
+  return nodes, tot_cost
+
+def node_to_order(connects_in, nodes, which_env):
+  """
+  Produces a contraction order from the connects and nodes for the network with
+  tensor at `which_env` held vacant. Used in `ncon_remove`.
+  """
+
   N = len(connects_in)
-  if allow_str:
-    # build dictionary between original and canonical labels
-    connects, fwd_dict, rev_dict, npos, nneg = make_cannon_connects(connects_in)
-  else:
-    connects = [np.array(connect, dtype=int) for connect in connects_in]
-  flat_connects = np.concatenate(connects)
-  uni_connects = np.unique(flat_connects)
+  connects = [connect for connect in connects_in]
+  del connects[which_env]
 
-  # check that original network is closed
-  if min(flat_connects) <= 0:
-    raise ValueError(
-      'This function is only applicable for closed tensor networks.')
-
-  # normalize the order
-  if order is None:
-    order_new = uni_connects[uni_connects > 0]
-  else:
-    if allow_str:
-      order_new = np.array([fwd_dict[ele] for ele in order])
-    else:
-      order_new = np.array([ele for ele in order])
-  
-  nodes = find_nodes(connects, order_new)
-  node_labs, needed_conts = reorder_nodes(nodes, [which_env])
-  common_nodes, temp_locs = np.intersect1d(node_labs, 
-                                          2**np.arange(N, dtype=np.uint64), 
-                                          assume_unique=True, 
-                                          return_indices=True)[:2]
-  init_locs = np.intersect1d(common_nodes, 2**np.arange(N, dtype=np.uint64), 
-                              assume_unique=True, return_indices=True)[2]
-  nodes_occupied = np.zeros(len(node_labs), dtype=int)
-  nodes_occupied[temp_locs] = np.ones(len(temp_locs))
-  
-  # expand lists to include room for intermediate tensors
-  connects_all = [0] * len(node_labs)
-  curr_nodes = 2**np.arange(N)
-  for count, loc in enumerate(temp_locs):
-    connects_all[loc] = connects[init_locs[count]]
-  
-  order = np.concatenate(node_to_order(connects_all, nodes, needed_conts, 
-                                       node_labs, nodes_occupied))
-  fin_order = [rev_dict[ele] for ele in order]
-
-  rem_labels = fin_connects.pop(which_env)
-  for k, lab in enumerate(rem_labels):
-    for p, connect in enumerate(fin_connects):
-      loc = connect == lab
-      if np.any(loc):
-        fin_connects[p][np.where(loc)[0].item()] = -k
+  # initialize nodes
+  nodes_poss = [2**k for k in range(N) if k != which_env]
+  nodes_remain = list(range(N-2))
+  order = []
+  for k in range(N-2):
+    for p, pos in enumerate(nodes_remain):
+      # find nodes that are able to be contracted
+      nodes_avail = np.intersect1d(nodes_poss, nodes[pos,:])
+      if len(nodes_avail) == 2:
+        # update order and connects
+        loc = np.intersect1d(nodes_poss, nodes_avail, return_indices=True)[1]
+        ord_temp, loc0, loc1 = np.intersect1d(
+            connects[loc[0]], connects[loc[1]], return_indices=True)
+        order += list(ord_temp)
+        connects.append(list(np.concatenate((np.delete(connects[loc[0]], loc0), 
+                            np.delete(connects[loc[1]], loc1)))))
+        
+        # update list of possessed nodes
+        nodes_poss.append(sum(nodes_avail))
+        del nodes_remain[p]       
         break
 
-  return fin_connects, fin_order
+  return order
 
-def ncon_solver(tensors: List[np.ndarray],
-                labels: List[List[int]],
-                max_branch: Optional[int] = None):
+def solve_order(tensors: List[np.ndarray],
+                connects: List[List[int]],
+                max_branch: Optional[int] = None,
+                order: Optional[List[int]] = None):
   """
   Solve for the contraction order of a tensor network (encoded in the `ncon`
   syntax) that minimizes the computational cost.
   Args:
     tensors: list of the tensors in the network.
-    labels: list of the tensor connections (in standard `ncon` format).
+    connects: list of the tensor connections (in standard `ncon` format).
     max_branch: maximum number of contraction paths to search at each step.
   Returns:
     np.ndarray: the cheapest contraction order found (in ncon format).
     float: the cost of the network contraction, given as log10(total_FLOPS).
     bool: specifies if contraction order is guaranteed optimal.
   """
-  # build log-adjacency matrix
-  log_adj = ncon_to_weighted_adj(tensors, labels)
+  return call_solver(tensors, connects, max_branch=max_branch, order=order)
 
-  # run search algorithm
-  order, costs, is_optimal = full_solve_complete(log_adj, max_branch=max_branch)
-
-  # put contraction order back into ncon format
-  con_order = ord_to_ncon(labels, order)
-
-  return con_order, costs, is_optimal
-
-def node_to_order(connects, nodes, needed_conts, node_labs, nodes_occupied):
-  
-  order = []
-  N = nodes.shape[0] + 2
-  while (sum(nodes_occupied) < len(nodes_occupied)):
-  
-    # find the tensor groups that we have possession of
-    poss_groups = node_labs[np.where(nodes_occupied)[0]]
-    temp_locs = np.intersect1d(nodes.flatten(), poss_groups, 
-                                return_indices=True)[1]
-
-    # find the nodes contractions that we are able to do 
-    poss_nodes = np.zeros(3 * (N-2), dtype=np.uint64)
-    poss_nodes[temp_locs] = np.ones(len(temp_locs))
-    poss_nodes = poss_nodes.reshape(N-2, 3)
-
-    possible_types = np.zeros(((N-2), 3), dtype=bool)
-    possible_types[:,0] = np.logical_and(poss_nodes[:,0], poss_nodes[:,1])
-    possible_types[:,1] = np.logical_and(poss_nodes[:,0], poss_nodes[:,2])
-    possible_types[:,2] = np.logical_and(poss_nodes[:,1], poss_nodes[:,2])
-
-    # find first node that we need to do and are able to do
-    nodes_to_do = np.logical_and(possible_types, needed_conts) # parallelize me!
-    xpos, ypos = np.divmod(np.where(nodes_to_do.flatten())[0][0], 3)
-    if ypos == 0:
-      ctype = [0, 1, 2]
-    elif ypos == 1:
-      ctype = [0, 2, 1]
-    elif ypos == 2:
-      ctype = [1, 2, 0]
-
-    # do node contractions
-    node_cont = np.array([nodes[xpos, ctype[0]], nodes[xpos, ctype[1]]], 
-                          dtype=np.uint64)
-    node_cont = np.append(node_cont, sum(node_cont).astype(np.uint64))
-    node_locs = np.intersect1d(node_cont, node_labs, assume_unique=True, 
-                                return_indices=True)[2]
-
-    cont_many, A_cont, B_cont = np.intersect1d(
-        connects[node_locs[0]], connects[node_locs[1]],
-        assume_unique=True, return_indices=True)
-
-    order.append(cont_many)
-
-    connects[node_locs[2]] = np.append(
-        np.delete(connects[node_locs[0]], A_cont),
-        np.delete(connects[node_locs[1]], B_cont))
-    
-    # update node information 
-    needed_conts[xpos, ypos] = False
-    nodes_occupied[node_locs[2]] = 1
-
-    # identify intermediate tensors that are no longer needed
-    temp_loc0 = -1
-    temp_loc1 = -1
-    if ypos == 0:
-      if not needed_conts[xpos, 1]:
-        temp_loc0 = np.where(node_labs == nodes[xpos,0])[0][0]
-      if not needed_conts[xpos, 2]:
-        temp_loc1 = np.where(node_labs == nodes[xpos,1])[0][0]
-    elif ypos == 1:
-      if not needed_conts[xpos, 0]:
-        temp_loc0 = np.where(node_labs == nodes[xpos,0])[0][0]
-      if not needed_conts[xpos, 2]:
-        temp_loc1 = np.where(node_labs == nodes[xpos,2])[0][0]
-    elif ypos == 2:
-      if not needed_conts[xpos, 0]:
-        temp_loc0 = np.where(node_labs == nodes[xpos,1])[0][0]
-      if not needed_conts[xpos, 1]:
-        temp_loc1 = np.where(node_labs == nodes[xpos,2])[0][0]
-    
-    # delete intermidate tensors to free memory
-    if (temp_loc0 >= 0) and (temp_loc1 >= 0):
-      del connects[max(temp_loc0, temp_loc1)]
-      del connects[min(temp_loc0, temp_loc1)]
-      nodes_occupied = np.delete(nodes_occupied, max(temp_loc0, temp_loc1))
-      nodes_occupied = np.delete(nodes_occupied, min(temp_loc0, temp_loc1))
-      node_labs = np.delete(node_labs, max(temp_loc0, temp_loc1))
-      node_labs = np.delete(node_labs, min(temp_loc0, temp_loc1))
-    elif temp_loc0 >= 0:
-      nodes_occupied = np.delete(nodes_occupied,temp_loc0)
-      node_labs = np.delete(node_labs, temp_loc0)
-    elif temp_loc1 >= 0:
-      nodes_occupied = np.delete(nodes_occupied,temp_loc1)
-      node_labs = np.delete(node_labs, temp_loc1)
-      
-  return order
-
-def reorder_nodes(nodes, which_envs):
-  """ 
-  Find the set of node contractions required for all specified network 
-  environments.
+def ncon(tensors:       List[np.ndarray],
+         connects:      List[Union[List[int], Tuple[int]]],
+         order:         Optional[Union[List[int], List[str]]] = None,
+         open_order:    Optional[Union[List[int], List[str]]] = None,
+         perform_check: Optional[bool] = True,
+         return_info:   Optional[bool] = False):
   """
+  Network CONtractor: contracts a tensor network of N tensors via a sequence
+  of (N-1) tensordot operations. More detailed instructions and examples can
+  be found at: https://arxiv.org/abs/1402.0939.
+  Args:
+    tensors: list of the tensors in the network.
+    connects: length-N list of lists (or tuples) specifying the network
+      connections. The jth entry of the ith list in connects labels the edge
+      connected to the jth index of the ith tensor. Labels should be positive
+      integers for internal indices and negative integers for free indices.
+    order: optional argument to specify the order for contracting the
+      positive indices. Defaults to ascending order if omitted. Can also be
+      set at "greedy" or "full" to call a solver to automatically determine
+      the order.
+    open_order: specification for the index ordering of the output tensor 
+      (overrides the standard convention of descending order on -ve labels).
+    perform_check: if true then the input network is checked for consistency;
+      this can catch many common user mistakes for defining networks.
+    return info: if true then return the contraction `order` and `cost`.
+    
+  Returns:
+    Union[np.ndarray,float]: the result of the network contraction; an
+      np.ndarray if the network contained open indices, otherwise a scalar.
+  """
+  tot_cost = 0
+  num_tensors = len(tensors)
+  tensor_list = [tensors[ele] for ele in range(num_tensors)]
+  connect_list = [np.array(connects[ele]) for ele in range(num_tensors)]
+
+  # generate contraction order if necessary
+  flat_connect = np.concatenate(connect_list)
+  if order is None:
+    order_new = np.unique(flat_connect[flat_connect > 0])
+  else:
+    order_new = np.array([ele for ele in list(order)], dtype=int)
+  order = [ele for ele in order_new]
+
+  # check inputs if enabled
+  if perform_check:
+    dims_list = [list(tensor.shape) for tensor in tensor_list]
+    check_network(connect_list, dims_list, order_new)
+
+  # do all partial traces
+  for ele in range(len(tensor_list)):
+    num_cont = len(connect_list[ele]) - len(np.unique(connect_list[ele]))
+    if num_cont > 0:
+      tensor_list[ele], connect_list[ele], cont_ind, cost = partial_trace(
+          connect_list[ele], tensor=tensor_list[ele])
+      order_new = np.delete(
+          order_new, np.intersect1d(order_new, cont_ind, return_indices=True)[1])
+      tot_cost += cost
+
+  # do all binary contractions
+  while len(order_new) > 0:
+    # identify tensors to be contracted
+    cont_ind = order_new[0]
+    locs = [ele for ele in range(len(connect_list)) if 
+            sum(connect_list[ele] == cont_ind) > 0]
+
+    # identify indices to be contracted
+    cont_many, A_cont, B_cont = np.intersect1d(
+        connect_list[locs[0]],
+        connect_list[locs[1]],
+        assume_unique=True,
+        return_indices=True)
+    if np.size(tensor_list[locs[0]]) < np.size(tensor_list[locs[1]]):
+      ind_order = np.argsort(A_cont)
+    else:
+      ind_order = np.argsort(B_cont)
+
+    # compute contraction costs
+    shp0 = np.array(tensor_list[locs[0]].shape, dtype=int)
+    shp1 = np.array(tensor_list[locs[1]].shape, dtype=int)
+    tot_cost += np.prod(shp0)*np.prod(shp1) // np.prod(
+        shp0[np.array(A_cont, dtype=int)])
+
+    # do binary contraction using tensordot
+    tensor_list.append(
+        np.tensordot(
+            tensor_list[locs[0]],
+            tensor_list[locs[1]],
+            axes=(A_cont[ind_order], B_cont[ind_order])))
+    connect_list.append(
+        np.append(
+            np.delete(connect_list[locs[0]], A_cont),
+            np.delete(connect_list[locs[1]], B_cont)))
+
+    # remove contracted tensors from list and update order
+    del tensor_list[locs[1]]
+    del tensor_list[locs[0]]
+    del connect_list[locs[1]]
+    del connect_list[locs[0]]
+    order_new = np.delete(
+        order_new, np.intersect1d(order_new, cont_many, return_indices=True)[1])
+
+  # do all outer products
+  while len(tensor_list) > 1:
+    s1 = tensor_list[-2].shape
+    s2 = tensor_list[-1].shape
+    cost += np.prod(s1)*np.prod(s2)
+    tensor_list[-2] = np.outer(tensor_list[-2].reshape(np.prod(s1)),
+                               tensor_list[-1].reshape(np.prod(s2))).reshape(
+                                   np.append(s1, s2))
+    connect_list[-2] = np.append(connect_list[-2], connect_list[-1])
+    del tensor_list[-1]
+    del connect_list[-1]
+
+  # do final permutation
+  if len(connect_list[0]) > 0:
+    if open_order is None:
+      # default to conventional order
+      tensor_out =  np.transpose(tensor_list[0], np.argsort(-connect_list[0]))
+    else:
+      # custom index order
+      fin_perm = [np.where(connect_list[0]==lab)[0].item() for lab in open_order]
+      tensor_out = np.transpose(tensor_list[0], fin_perm)
+  else:
+    # export 0-dim ndarray into scalar
+    tensor_out = tensor_list[0].item()
   
-  # Initializations
-  N = nodes.shape[0] + 2
-  node_labs = np.zeros((len(which_envs), 2 * (N - 2)), dtype=np.uint64)
-  pos_vec = 3*np.arange(N-2, dtype=np.uint64)
+  if return_info:
+    return tensor_out, order, tot_cost
+  else:
+    return tensor_out
 
-  # transform nodes to string form (binary rep)
-  form = '0' + str(N+1) + 'b' 
-  bin_nodes = [format(ele, form) for ele in list(nodes.flatten())]
+def partial_trace(labels, tensor=None):
+  """ 
+  Partial trace on `tensor` over matching `labels`. If no tensor is provided 
+  then only the labels are updated to remove repeat entries. Returns the new
+  tensor, its labels, the list of indices that were traced over, and the cost.
+  """
 
-  # compute the collection of needed node contractions
-  needed_conts = np.zeros(3 * (N - 2), dtype=bool)
-  for count, env in enumerate(which_envs):
-    temp_locs = np.where(np.logical_not(np.array([int(ele[N - env]) 
-      for ele in bin_nodes], dtype=bool)))[0]
-    node_labs[count,:] = nodes.flatten()[temp_locs]
-    temp_type = np.sum(np.mod(temp_locs, 3).reshape(N - 2, 2), 
-                      axis=1).astype(np.uint64) - 1
-    needed_conts[temp_type + pos_vec] = np.ones(N - 2, dtype=bool)
+  cost = 0
+  labels = np.array(labels, dtype=int)
+  num_cont = len(labels) - len(np.unique(labels))
+  if num_cont > 0:
+    # determine indices to trace
+    dup_list = []
+    for ele in np.unique(labels):
+      if sum(labels == ele) > 1:
+        dup_list.append([np.where(labels == ele)[0]])
+    cont_ind = np.array(dup_list).reshape(2 * num_cont, order='F')
+    free_ind = np.delete(np.arange(len(labels)), cont_ind)
 
-  # add final envs to the list of nodes
-  for env in which_envs:
-    node_labs = np.append(node_labs, np.uint64(2**N - 1 - 2**env))
-  node_labs = np.unique(node_labs.flatten())
+    # labels of final tensor
+    B_label = np.delete(labels, cont_ind)
+    cont_label = np.unique(labels[cont_ind])
 
-  return node_labs, needed_conts.reshape(N-2,3)
+    # do partial trace as an index summation
+    if tensor is not None:
+      # dimensions of indices to trace
+      cont_dim = np.prod(np.array(tensor.shape)[cont_ind[:num_cont]])
+      free_dim = np.array(tensor.shape)[free_ind]
+
+      cost = np.prod(free_dim)*cont_dim
+
+      B = np.zeros(np.prod(free_dim))
+      tensor = tensor.transpose(np.append(free_ind, cont_ind)).reshape(
+          np.prod(free_dim), cont_dim, cont_dim)
+      for ip in range(cont_dim):
+        B = B + tensor[:, ip, ip]
+
+      return B.reshape(free_dim), B_label, cont_label, cost
+    else:
+      return B_label, cont_label, cost
+
+  else:
+    # no partial trace is needed
+    return tensor, labels, [], cost
 
 def do_node_contracts(tensors, connects, nodes, needed_conts, node_labs, 
                       nodes_occupied):
@@ -468,342 +541,102 @@ def do_node_contracts(tensors, connects, nodes, needed_conts, node_labs,
       
   return tensors, connects, node_labs
 
-def partial_trace(A, A_label):
-  """ do partial trace on tensor A over repeated labels in A_label """
-
-  num_cont = len(A_label) - len(np.unique(A_label))
-  if num_cont > 0:
-    dup_list = []
-    for ele in np.unique(A_label):
-      if sum(A_label == ele) > 1:
-        dup_list.append([np.where(A_label == ele)[0]])
-
-    cont_ind = np.array(dup_list).reshape(2 * num_cont, order='F')
-    free_ind = np.delete(np.arange(len(A_label)), cont_ind)
-
-    cont_dim = np.prod(np.array(A.shape)[cont_ind[:num_cont]])
-    free_dim = np.array(A.shape)[free_ind]
-
-    B_label = np.delete(A_label, cont_ind)
-    cont_label = np.unique(A_label[cont_ind])
-    B = np.zeros(np.prod(free_dim))
-    A = A.transpose(np.append(free_ind, cont_ind)).reshape(
-        np.prod(free_dim), cont_dim, cont_dim)
-    for ip in range(cont_dim):
-      B = B + A[:, ip, ip]
-
-    return B.reshape(free_dim), B_label, cont_label
-
-  else:
-    return A, A_label, []
-
-def remove_partial(connects, order, tensors=None):
-  """ 
-  Remove indices corresponding to partial traces from `connects` and `order`.
-  Also can perform the partial trace on tensors if provided.
+def remove_tensor(connects_in, which_env, order=None, open_order=None,
+                  standardize_outputs=True, one_based=False):
   """
-  tr_inds = []
-  red_connects = []
-  for count, connect in enumerate(connects):
-    # find the traced indices
-    unis, locs, invs, counts = np.unique(connect, return_index=True, 
-                                         return_inverse=True, 
-                                         return_counts=True)
-    c_inds = unis[invs[np.sort(locs[counts==2])]]
-    f_inds = unis[invs[np.sort(locs[counts==1])]]
-    
-    if tensors is not None:
-      # generate permutation 
-      p0 = [np.where(connect==f_inds[k])[0].item() for k in range(len(f_inds))]
-      p1 = [np.where(connect==c_inds[k])[0][0].item() for k in range(len(c_inds))]
-      p2 = [np.where(connect==c_inds[k])[0][1].item() for k in range(len(c_inds))]
-      perm_vec = p0 + p1 + p2
-    
-      tensors_all = np.transpose(tensors[count], a_perm[b_perm])
-
-    red_connects.append(f_inds)
-    tr_inds.append(c_inds)
-
-  tr_inds = np.concatenate(tr_inds)
-  red_order = [lab for lab in order if sum(tr_inds==lab)==0]
-
-  return red_connects, red_order
-
-def find_nodes(connects, order):
-  """ 
-  Find the node ordering of a network. 
+  Given a closed network and contraction order as input, will output a network 
+  and new contraction order for the single tensor environment specified by the 
+  input `which_env`. The new contraction order is gauranteed to be of lesser 
+  or equivalent cost to that of the input order. Output network can either be
+  standardized (+ve ints for internal indices and -ve ints for open indices) or
+  retain the original labels. Open indices can either use zero-based numbering
+  (default) or one-based numbering.
   """
-  tconnects = [connect for connect in connects]
-  torder = [ele for ele in order]
-  
-  N = len(tconnects) 
-  temp_nodes = np.zeros(3, dtype=np.uint64)
-  nodes = np.zeros((N-2, 3), dtype=np.uint64)
-  node_labs = 2**(np.arange(N, dtype=np.uint64))
-  for count in range(N-2):
-    locs = [ele for ele in range(len(tconnects)) if 
-            sum(tconnects[ele] == torder[0]) > 0]
-    cont_many, A_cont, B_cont = np.intersect1d(
-        tconnects[locs[0]],
-        tconnects[locs[1]],
-        assume_unique=True,
-        return_indices=True)
-
-    temp_nodes[0] = node_labs[locs[0]]
-    temp_nodes[1] = node_labs[locs[1]]
-    temp_nodes[2] = 2**N - node_labs[locs[0]] - node_labs[locs[1]] - 1
-    nodes[count, :] = np.sort(temp_nodes)
-
-    tconnects.append(np.concatenate((
-      np.delete(tconnects[locs[0]], A_cont),
-      np.delete(tconnects[locs[1]], B_cont))))
-    del tconnects[locs[1]]
-    del tconnects[locs[0]]
-
-    node_labs = np.append(node_labs, node_labs[locs[0]] + node_labs[locs[1]])
-    node_labs = np.delete(node_labs, [locs[0], locs[1]])
-
-    torder = [lab for lab in torder if sum(cont_many==lab)==0]
-
-  return nodes
-
-def pre_ncon(connects, dims=None, order=None):
-  """ 
-  Converts labels in `connects` to normal form (sequential integers). 
-  Determines cost of contraction based on the given `order`.
-  """
-  # define default dims everywhere as `d`
-  if dims is None:
-    dims = []
-    for tensor in connects:
-      dims.append(['d'] * len(tensor))
-
-  # build dictionary between original and canonical dims
-  nml_dims, fwd_dim_dict, rev_dim_dict = make_cannon_dims(dims)
-
+ 
   # build dictionary between original and canonical labels
-  nml_connects, fwd_dict, rev_dict, npos, nneg = make_cannon_connects(connects)
+  N = len(connects_in)
+  connects, fwd_dict, rev_dict, npos, nneg = make_canon_connects(connects_in)
+  flat_connects = np.concatenate(connects)
+  uni_connects = np.unique(flat_connects)
 
-  # find canonical order
+  # check that original network is closed
+  if min(flat_connects) <= 0:
+    raise ValueError(
+      'This function is only applicable for closed tensor networks.')
+
+  # normalize the order
   if order is None:
-    nml_order = np.arange(npos) + 1
+    order_new = uni_connects[uni_connects > 0]
   else:
-    nml_order = np.array([fwd_dict[ele] for ele in order])
+    order_new = np.array([fwd_dict[ele] for ele in order])
+  
+  # find the new order of contraction
+  nodes = find_nodes(connects, order_new)[0]
+  order_out = node_to_order(connects, nodes, which_env)
 
-  # check validity of network
-  check_inputs(nml_connects, nml_dims, nml_order, rev_dict, rev_dim_dict)
-
-  # identify contraction indices
-  pt_cont, bn_cont = identify_cont_labels(nml_connects, nml_order)
-
-  # compute contraction costs
-  pt_costs, bn_costs = compute_costs(nml_connects, nml_dims, pt_cont, bn_cont, 
-                                     rev_dim_dict)
+  if standardize_outputs:
+    # put connect labels into standardized form 
+    fin_connects = [connect for connect in connects]
+    temp_ord = fin_connects.pop(which_env)
+    for p, connect in enumerate(fin_connects):
+      comm, loc0, loc1 = np.intersect1d(connect, temp_ord, return_indices=True)
+      for k in range(len(comm)):
+        fin_connects[p][loc0[k]] = -loc1[k] - one_based
+      fin_connects[p] = list(fin_connects[p])
+    open_ord = list(range(-one_based, -len(fin_connects)-one_based, -1))
+  else:
+    # put connect labels back into original form 
+    order_out = [rev_dict[order_out[k]] for k in range(len(order_out))]
+    fin_connects = [connect for connect in connects_in]
+    open_ord = fin_connects.pop(which_env)
     
-  return nml_connects, nml_order, fwd_dict, rev_dict, pt_cont, bn_cont, pt_costs, bn_costs
+  return fin_connects, order_out, open_ord
 
-def compute_costs(connects, dims, pt_cont, bn_cont, rev_dim_dict=None):
+def reorder_nodes(nodes, which_envs):
   """ 
-  Identify the labels involved in each tensor contraction (either a partial 
-  trace or a binary tensor contraction).
-  """
-  nml_connects = [ele for ele in connects]
-  nml_dims = [ele for ele in dims]
-
-  # partial trace costs
-  pt_costs = []
-  for pt_labs in pt_cont:
-    for count, sublist in enumerate(nml_connects):
-      pt_inds, pt_locs0, _ = np.intersect1d(sublist, pt_labs, return_indices=True)
-      if len(pt_inds) > 0:
-        sublist = np.delete(sublist, pt_locs0)
-        cont_cost = np.delete(nml_dims[count], pt_locs0)
-        _, pt_locs1, _ = np.intersect1d(sublist, pt_labs, return_indices=True)
-        
-        nml_connects[count] = np.delete(sublist, pt_locs1)
-        nml_dims[count] = np.delete(cont_cost, pt_locs1)
-        break
-    
-    pt_costs.append(cont_cost)
-
-  # binary contraction costs
-  bn_costs = []
-  for bn_labs in bn_cont:
-    locs = [ele for ele in range(len(nml_connects)) if 
-            sum(nml_connects[ele] == bn_labs[0]) > 0]
-    cont_many, A_cont, B_cont = np.intersect1d(
-        nml_connects[locs[0]],
-        nml_connects[locs[1]],
-        assume_unique=True,
-        return_indices=True)
-
-    nml_connects.append(np.concatenate((
-        np.delete(nml_connects[locs[0]], A_cont),
-        np.delete(nml_connects[locs[1]], B_cont))))
-    bn_costs.append(np.concatenate((
-        np.delete(nml_dims[locs[0]], A_cont), nml_dims[locs[1]])))
-    nml_dims.append(np.concatenate((
-        np.delete(nml_dims[locs[0]], A_cont),
-        np.delete(nml_dims[locs[1]], B_cont))))
-
-    del nml_connects[locs[1]]
-    del nml_connects[locs[0]]
-    del nml_dims[locs[1]]
-    del nml_dims[locs[0]]
-
-  # tally the total partial trace costs
-  is_symbolic = False
-  int_pt_costs = []
-  fin_pt_costs = []
-  for cost in pt_costs:
-    uni_dims = np.unique(cost)
-
-    str_cost = ''
-    int_cost = 1
-    for dim in uni_dims:
-      degen = sum(cost == dim)
-      if rev_dim_dict is None:
-        value = dim
-      else:
-        value = rev_dim_dict[dim]
-
-      if isinstance(value, str):
-        str_cost += '(' + value + '^' + str(degen) + ')'
-        is_symbolic = True
-      else:
-        int_cost = int_cost * value**degen
-
-    int_pt_costs.append(int_cost)
-    if int_cost > 1:
-      if int_cost > 99:
-        fin_pt_costs.append("{:.1e}".format(int_cost) + '*' + str_cost)
-      else:
-        fin_pt_costs.append(str(int_cost) + '*' + str_cost)
-    else:
-      fin_bn_costs.append(str_cost)
-
-  # tally the total binary contraction costs
-  int_bn_costs = []
-  fin_bn_costs = []
-  for cost in bn_costs:
-    uni_dims = np.unique(cost)
-
-    str_cost = ''
-    int_cost = 1
-    for dim in uni_dims:
-      degen = sum(cost == dim)
-      if rev_dim_dict is None:
-        value = dim
-      else:
-        value = rev_dim_dict[dim]
-
-      if isinstance(value, str):
-        str_cost += '(' + value + '^' + str(degen) + ')'
-        is_symbolic = True
-      else:
-        int_cost = int_cost * value**degen
-
-    int_bn_costs.append(int_cost)
-    if int_cost > 1:
-      if int_cost > 99:
-        fin_bn_costs.append("{:.1e}".format(int_cost) + '*' + str_cost)
-      else:
-        fin_bn_costs.append(str(int_cost) + '*' + str_cost)
-    else:
-      fin_bn_costs.append(str_cost)
-
-  if not is_symbolic:
-    fin_pt_costs = int_pt_costs
-    fin_bn_costs = int_bn_costs
-
-  return fin_pt_costs, fin_bn_costs
-
-def identify_cont_labels(connects, order):
-  """ 
-  Identify the labels involved in each tensor contraction (either a partial 
-  trace or a binary tensor contraction).
-  """
-
-  nml_order = [ele for ele in order]
-  nml_connects = [ele for ele in connects]
-
-  # indentify partial trace indices to be contracted
-  pt_cont = []
-  for count, sublist in enumerate(nml_connects):
-    uni_labs, uni_locs = np.unique(sublist, return_index=True)
-    num_cont = len(sublist) - len(uni_labs)
-    if num_cont > 0:
-      dup_list = []
-      for ele in uni_labs:
-        temp_locs = np.where(sublist == ele)[0]
-        if len(temp_locs) == 2:
-          dup_list.append(ele)
-          sublist = np.delete(sublist, temp_locs)
-          nml_order = np.delete(nml_order, nml_order==ele)
-      
-      pt_cont.append(np.array(dup_list))
-      nml_connects[count] = sublist
-
-  # indentify binary contraction indices 
-  bn_cont = []
-  while len(nml_order) > 0:
-    locs = [ele for ele in range(len(nml_connects)) 
-            if sum(nml_connects[ele] == nml_order[0]) > 0]
-
-    cont_many, A_cont, B_cont = np.intersect1d(
-        nml_connects[locs[0]],
-        nml_connects[locs[1]],
-        assume_unique=True,
-        return_indices=True)
-    
-    bn_cont.append(cont_many)
-    nml_connects.append(np.concatenate((
-      np.delete(nml_connects[locs[0]], A_cont),
-      np.delete(nml_connects[locs[1]], B_cont))))
-    del nml_connects[locs[1]]
-    del nml_connects[locs[0]]
-    nml_order = np.delete(nml_order, np.intersect1d(nml_order, 
-                                                    cont_many, 
-                                                    return_indices=True)[1])
-    
-  return pt_cont, bn_cont
-
-def make_cannon_dims(dims):
-  """ 
-  Create dict holding the unique tensor dims, which may be input either as 
-  strings or integers, and transform the dims according to this dict. 
+  Find the set of node contractions required for all specified network 
+  environments.
   """
   
-  # flatten the list of connections
-  flat_dims = [item for sublist in dims for item in sublist]
+  if isinstance(which_envs, int):
+    which_envs = [which_envs]
 
-  # find unique entries
-  uni_dims = []
-  for ele in flat_dims:
-    if ele not in uni_dims:
-      uni_dims.append(ele)
-  
-  # create dictionary to map between original and cannonical dims
-  fwd_dict = dict(zip(uni_dims, np.arange(len(uni_dims))))
-  rev_dict = dict(zip(np.arange(len(uni_dims)), uni_dims))
+  # Initializations
+  N = nodes.shape[0] + 2
+  node_labs = np.zeros((len(which_envs), 2 * (N - 2)), dtype=np.uint64)
+  pos_vec = 3*np.arange(N-2, dtype=np.uint64)
 
-  # make canonical dims
-  can_dims = []
-  for tensor in dims:
-    temp_dims = []
-    for lab in tensor:
-      temp_dims.append(fwd_dict[lab])
-    can_dims.append(np.array(temp_dims, dtype=int))
+  # transform nodes to string form (binary rep)
+  form = '0' + str(N+1) + 'b' 
+  bin_nodes = [format(ele, form) for ele in list(nodes.flatten())]
 
-  return can_dims, fwd_dict, rev_dict
+  # compute the collection of needed node contractions
+  needed_conts = np.zeros(3 * (N - 2), dtype=bool)
+  for count, env in enumerate(which_envs):
+    temp_locs = np.where(np.logical_not(np.array([int(ele[N - env]) 
+      for ele in bin_nodes], dtype=bool)))[0]
+    node_labs[count,:] = nodes.flatten()[temp_locs]
+    temp_type = np.sum(np.mod(temp_locs, 3).reshape(N - 2, 2), 
+                      axis=1).astype(np.uint64) - 1
+    needed_conts[temp_type + pos_vec] = np.ones(N - 2, dtype=bool)
 
-def make_cannon_connects(connects):
+  # add final envs to the list of nodes
+  for env in which_envs:
+    node_labs = np.append(node_labs, np.uint64(2**N - 1 - 2**env))
+  node_labs = np.unique(node_labs.flatten())
+
+  return node_labs, needed_conts.reshape(N-2,3)
+
+def make_canon_connects(connects, order=None, open_order=None, one_based=False):
   """
   Takes in a set of `connects` defining a network, where index labels can be
   given either as `int` or `str` and returns dicts mapping between cannonical
   labels: where open (external) indices are labelled with negative integers 
-  (starting at -1) and closed (internal) indices are labelled with positive
-  integers (starting at +1). Sorting of indices is done alpha-numerically.
+  (starting at -'start') and closed (internal) indices are labelled with 
+  positive integers (starting at +1). Sorting of indices of internal and open
+  indices can either be provided (via 'order' and 'open_order') or will default
+  to strings (alphabetical order) followed by integers (ascending order). Also 
+  returns dictionaries for transforming between original and canonical indices.
   """
 
   # flatten the list of connections
@@ -845,34 +678,262 @@ def make_cannon_connects(connects):
           ind = "`" + str(ele) + "`"))
   
   # sort and combine index labels
-  sgl_str.sort()
-  dbl_str.sort()
-  sgl_int.sort()
-  sgl_int.reverse()
-  dbl_int.sort()
-  open_inds = sgl_str + sgl_int
-  clsd_inds = dbl_str + dbl_int
-  num_neg = len(open_inds)
+  if order is None:
+    # use standard order
+    dbl_str.sort()
+    dbl_int.sort()
+    clsd_inds = dbl_str + dbl_int
+  else:
+    # user-defined order
+    clsd_inds = order
+
+  if open_order is None:
+    # use standard order
+    sgl_str.sort()
+    sgl_int.sort()
+    sgl_int.reverse()
+    open_inds = sgl_str + sgl_int
+  else:
+    # user-defined order
+    open_inds = open_order
+
   num_pos = len(clsd_inds)
+  num_neg = len(open_inds)
 
   # create dictionary to map between original and cannonical labels
-  pos_labs = dict(zip(open_inds, -np.arange(1,len(open_inds) + 1)))
-  neg_labs = dict(zip(clsd_inds, np.arange(1,len(clsd_inds) + 1)))
-  can_labs = {**pos_labs, **neg_labs}
-  rev_can_labs = dict(zip(can_labs.values(), can_labs.keys()))
+  neg_labs = dict(zip(open_inds, -np.arange(one_based,len(open_inds) + 
+                                            one_based)))
+  pos_labs = dict(zip(clsd_inds, np.arange(1,len(clsd_inds) + 1)))
+  fwd_dict = {**neg_labs, **pos_labs}
+  rev_dict = dict(zip(fwd_dict.values(), fwd_dict.keys()))
 
   # make canonical connections
   can_connects = []
   for tensor in connects:
     temp_inds = []
     for lab in list(tensor):
-      temp_inds.append(can_labs[lab])
+      temp_inds.append(fwd_dict[lab])
     can_connects.append(np.array(temp_inds, dtype=int))
 
-  return can_connects, can_labs, rev_can_labs, num_pos, num_neg
+  return can_connects, fwd_dict, rev_dict, num_pos, num_neg
 
-def check_inputs(connects, dims, con_order, rev_dict=None, rev_dim_dict=None):
-  """ Check consistancy of NCON inputs"""
+def make_canon_dims(dims):
+  """ 
+  Create dict holding the unique tensor dims, which may be input either as 
+  strings or integers, and transform the dims according to this dict. 
+  """
+  
+  # flatten the list of connections
+  flat_dims = [item for sublist in dims for item in sublist]
+
+  # find unique entries
+  uni_dims = []
+  for ele in flat_dims:
+    if ele not in uni_dims:
+      uni_dims.append(ele)
+  
+  # create dictionary to map between original and cannonical dims
+  fwd_dict = dict(zip(uni_dims, np.arange(len(uni_dims))))
+  rev_dict = dict(zip(np.arange(len(uni_dims)), uni_dims))
+
+  # make canonical dims
+  can_dims = []
+  for tensor in dims:
+    temp_dims = []
+    for lab in tensor:
+      temp_dims.append(fwd_dict[lab])
+    can_dims.append(np.array(temp_dims, dtype=int))
+
+  return can_dims, fwd_dict, rev_dict
+
+def compute_costs(connects, order=None, dims=None, return_pt=False):
+  """ 
+  Computes the cost of the sequence of binary contractions (and optionally also
+  the partial traces) require to contract a network given some `order`. Input
+  `dims` can be symbolic (strings) or numeric (ints), or a combination of both.
+  """
+
+  # define default dims everywhere as `d`
+  if dims is None:
+    dims = []
+    for tensor in connects:
+      dims.append(['d'] * len(tensor))
+
+  # build dictionary between original and canonical dims
+  nml_dims, fwd_dim_dict, rev_dim_dict = make_canon_dims(dims)
+  
+  # build dictionary between original and canonical dims
+  nml_connects, fwd_dict, _, npos, num_neg = make_canon_connects(connects)
+  keep_connects = [connect for connect in nml_connects]
+
+  # find canonical order
+  if order is None:
+    nml_order = np.arange(npos) + 1
+  else:
+    nml_order = np.array([fwd_dict[ele] for ele in order])
+
+  # indentify partial trace indices to be contracted
+  pt_cont = []
+  for count, sublist in enumerate(nml_connects):
+    uni_labs, uni_locs = np.unique(sublist, return_index=True)
+    num_cont = len(sublist) - len(uni_labs)
+    if num_cont > 0:
+      dup_list = []
+      for ele in uni_labs:
+        temp_locs = np.where(sublist == ele)[0]
+        if len(temp_locs) == 2:
+          dup_list.append(ele)
+          sublist = np.delete(sublist, temp_locs)
+          nml_order = np.delete(nml_order, nml_order==ele)
+      
+      pt_cont.append(np.array(dup_list))
+      nml_connects[count] = sublist
+
+  # indentify binary contraction indices 
+  bn_cont = []
+  while len(nml_order) > 0:
+    locs = [ele for ele in range(len(nml_connects)) 
+            if sum(nml_connects[ele] == nml_order[0]) > 0]
+
+    cont_many, A_cont, B_cont = np.intersect1d(
+        nml_connects[locs[0]],
+        nml_connects[locs[1]],
+        assume_unique=True,
+        return_indices=True)
+    
+    bn_cont.append(cont_many)
+    nml_connects.append(np.concatenate((
+      np.delete(nml_connects[locs[0]], A_cont),
+      np.delete(nml_connects[locs[1]], B_cont))))
+    del nml_connects[locs[1]]
+    del nml_connects[locs[0]]
+    nml_order = np.delete(nml_order, np.intersect1d(nml_order, 
+                                                    cont_many, 
+                                                    return_indices=True)[1])
+
+  # compute partial trace costs
+  nml_connects = keep_connects
+  pt_costs = []
+  for pt_labs in pt_cont:
+    for count, sublist in enumerate(nml_connects):
+      pt_inds, pt_locs0, _ = np.intersect1d(
+          sublist, pt_labs, return_indices=True)
+      if len(pt_inds) > 0:
+        sublist = np.delete(sublist, pt_locs0)
+        cont_cost = np.delete(nml_dims[count], pt_locs0)
+        _, pt_locs1, _ = np.intersect1d(sublist, pt_labs, return_indices=True)
+        
+        nml_connects[count] = np.delete(sublist, pt_locs1)
+        nml_dims[count] = np.delete(cont_cost, pt_locs1)
+        break
+    pt_costs.append(cont_cost)
+    
+  # compute binary contraction costs
+  bn_costs = []
+  for bn_labs in bn_cont:
+    locs = [ele for ele in range(len(nml_connects)) if 
+            sum(nml_connects[ele] == bn_labs[0]) > 0]
+    cont_many, A_cont, B_cont = np.intersect1d(
+        nml_connects[locs[0]],
+        nml_connects[locs[1]],
+        assume_unique=True,
+        return_indices=True)
+
+    nml_connects.append(np.concatenate((
+        np.delete(nml_connects[locs[0]], A_cont),
+        np.delete(nml_connects[locs[1]], B_cont))))
+    bn_costs.append(np.concatenate((
+        np.delete(nml_dims[locs[0]], A_cont), nml_dims[locs[1]])))
+    nml_dims.append(np.concatenate((
+        np.delete(nml_dims[locs[0]], A_cont),
+        np.delete(nml_dims[locs[1]], B_cont))))
+
+    del nml_connects[locs[1]]
+    del nml_connects[locs[0]]
+    del nml_dims[locs[1]]
+    del nml_dims[locs[0]]
+
+  # tally the total partial trace costs
+  is_symbolic = False
+  int_pt_costs = []
+  fin_pt_costs = []
+  for cost in pt_costs:
+    uni_dims = np.unique(cost)
+    str_cost = ''
+    int_cost = 1
+    for dim in uni_dims:
+      degen = sum(cost == dim)
+      if rev_dim_dict is None:
+        value = dim
+      else:
+        value = rev_dim_dict[dim]
+
+      if isinstance(value, str):
+        str_cost += '(' + str(value) + '^' + str(degen) + ')'
+        is_symbolic = True
+      else:
+        int_cost = int_cost * value**degen
+      
+    int_pt_costs.append(int_cost)
+    if int_cost > 1:
+      if int_cost > 1000:
+        if len(str_cost) > 0:
+          fin_pt_costs.append("{:.1e}".format(int_cost) + '*' + str_cost)
+        else:
+          fin_pt_costs.append(int_cost)
+      else:
+        if len(str_cost) > 0:
+          fin_pt_costs.append(str(int_cost) + '*' + str_cost)
+        else:
+          fin_pt_costs.append(int_cost)
+    else:
+      fin_pt_costs.append(str_cost)
+
+  # tally the total binary contraction costs
+  int_bn_costs = []
+  fin_bn_costs = []
+  for cost in bn_costs:
+    uni_dims = np.unique(cost)
+    str_cost = ''
+    int_cost = 1
+    for dim in uni_dims:
+      degen = sum(cost == dim)
+      if rev_dim_dict is None:
+        value = dim
+      else:
+        value = rev_dim_dict[dim]
+
+      if isinstance(value, str):
+        str_cost += '(' + str(value) + '^' + str(degen) + ')'
+        is_symbolic = True
+      else:
+        int_cost = int_cost * value**degen
+
+    int_bn_costs.append(int_cost)
+    if int_cost > 1:
+      if int_cost > 1000:
+        if len(str_cost) > 0:
+          fin_bn_costs.append("{:.1e}".format(int_cost, "e") + '*' + str_cost)
+        else:
+          fin_bn_costs.append(int_cost)
+      else:
+        if len(str_cost) > 0:
+          fin_bn_costs.append(str(int_cost) + '*' + str_cost)
+        else:
+          fin_bn_costs.append(int_cost)
+    else:
+      fin_bn_costs.append(str_cost)
+
+  if return_pt:
+    return fin_bn_costs, fin_pt_costs
+  else:
+    return fin_bn_costs
+
+def check_network(connects, dims, order, rev_dict=None, rev_dim_dict=None):
+  """ 
+  Check the validity of a network. Require input `connects` to already be in
+  canonical form (+ve ints for internal inds and -ve ints for external).
+  """
 
   flat_connect = np.concatenate(connects)
   pos_ind = flat_connect[flat_connect > 0]
@@ -896,7 +957,7 @@ def check_inputs(connects, dims, con_order, rev_dict=None, rev_dim_dict=None):
               n2 = str(len(connects[ele]))))
 
   # check that contraction order is valid
-  if not np.array_equal(np.sort(con_order), np.unique(pos_ind)):
+  if not np.array_equal(np.sort(order), np.unique(pos_ind)):
     raise ValueError('Network definition error: invalid contraction order')
 
   # check that positive indices are valid and contracted tensor dimensions match
@@ -930,85 +991,16 @@ def check_inputs(connects, dims, con_order, rev_dict=None, rev_dim_dict=None):
         d0 = cont_dims[0]
         d1 = cont_dims[1]
 
+      if rev_dict is not None:
+        ind_temp = rev_dict[ind]
+      else:
+        ind_temp = ind
+
       raise ValueError(
           'Network definition error: tensor dimension mismatch on'
           ' index labelled {n0}: dim-{n1} versus dim-{n2}'
-          .format(n0 = "`" + str(rev_dict[ind]) + "`", 
+          .format(n0 = "`" + str(ind_temp) + "`", 
                   n1 = str(d0), 
                   n2 = str(d1)))
 
   return True
-
-def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
-  """
-  Produces a `ncon` compatible index contraction order from the sequence of
-  pairwise contractions.
-  Args:
-    labels: list of the tensor connections (in standard `ncon` format).
-    orders: array of dim (2,N-1) specifying the set of N-1 pairwise
-      tensor contractions.
-  Returns:
-    np.ndarray: the contraction order (in `ncon` format).
-  """
-
-  N = len(labels)
-  orders = orders.reshape(2, N - 1)
-  new_labels = [np.array(labels[i]) for i in range(N)]
-  con_order = np.zeros([0], dtype=int)
-
-  # remove all partial trace indices
-  for counter, temp_label in enumerate(new_labels):
-    uni_inds, counts = np.unique(temp_label, return_counts=True)
-    tr_inds = uni_inds[np.flatnonzero(counts == 2)]
-    con_order = np.concatenate((con_order, tr_inds))
-    new_labels[counter] = temp_label[np.isin(temp_label, uni_inds[counts == 1])]
-
-  for i in range(N - 1):
-    # find common indices between tensor pair
-    cont_many, A_cont, B_cont = np.intersect1d(
-        new_labels[orders[0, i]], new_labels[orders[1, i]], return_indices=True)
-    temp_labels = np.append(
-        np.delete(new_labels[orders[0, i]], A_cont),
-        np.delete(new_labels[orders[1, i]], B_cont))
-    con_order = list(np.concatenate((con_order, cont_many), axis=0))
-
-    # build new set of labels
-    new_labels[orders[0, i]] = temp_labels
-    del new_labels[orders[1, i]]
-
-  return con_order
-
-def ncon_to_weighted_adj(tensors: List[np.ndarray], labels: List[List[int]]):
-  """
-  Create a log-adjacency matrix, where element [i,j] is the log10 of the total
-  dimension of the indices connecting ith and jth tensors, for a network
-  defined in the `ncon` syntax.
-  Args:
-    tensors: list of the tensors in the network.
-    labels: list of the tensor connections (in standard `ncon` format).
-  Returns:
-    np.ndarray: the log-adjacency matrix.
-  """
-  # process inputs
-  N = len(labels)
-  ranks = [len(labels[i]) for i in range(N)]
-  flat_labels = np.hstack([labels[i] for i in range(N)])
-  tensor_counter = np.hstack(
-      [i * np.ones(ranks[i], dtype=int) for i in range(N)])
-  index_counter = np.hstack([np.arange(ranks[i]) for i in range(N)])
-
-  # build log-adjacency index-by-index
-  log_adj = np.zeros([N, N])
-  unique_labels = np.unique(flat_labels)
-  for ele in unique_labels:
-    # identify tensor/index location of each edge
-    tnr = tensor_counter[flat_labels == ele]
-    ind = index_counter[flat_labels == ele]
-    if len(ind) == 1:  # external index
-      log_adj[tnr[0], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
-    elif len(ind) == 2:  # internal index
-      if tnr[0] != tnr[1]:  # ignore partial traces
-        log_adj[tnr[0], tnr[1]] += np.log10(tensors[tnr[0]].shape[ind[0]])
-        log_adj[tnr[1], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
-
-  return log_adj
