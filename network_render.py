@@ -13,24 +13,56 @@ import matplotlib.patheffects as path_effects
 import matplotlib.lines as mlines
 from matplotlib import patches
 from typing import Optional, List, Union, Tuple
-from network_contract import pre_ncon
+from network_contract import (
+    make_canon_connects, make_canon_dims, check_network)
 
-def draw_network(curr_fig, connects, names=None, coords=None, colors=None, 
-                 dims=None, circ_rad=0.3, fontsize=16, tagsize=8, subplot=111, 
-                 draw_labels=True, title=None, order=None, bkg_col='silver',
+def draw_network(connects, names='default', coords=None, colors=None, 
+                 dims=None, circ_rad=0.3, fontsize=16, tagsize=8, 
+                 draw_labels=True, title=None, order=None, open_order=None,
                  show_costs=False, legend_extend=1.5, spacing=0.125,
-                 env_pad=(0,0), linewidth=3):
-  
+                 env_pad=(0.1,0), linewidth=2.5, figsize=6, subplot=111,
+                 fig=None, vacant_coord=None, bkg_col='silver'):
+  """
+  Draws a network from the set of 'connects' defining the network. Examples
+  demonstrating the use of the optional arguments can be found in the 
+  `Guide: Network Renderer` notebook.
+  """
+
   # recast connects in canonical form, compute contraction list and costs
-  (nm_connects, fwd_dict, back_dict, pt_cont, bn_cont, pt_costs, 
-   bn_costs) = pre_ncon(connects, dims, order)
+  N = len(connects)
+
+  # build dictionary between original and canonical connects
+  nm_connects, fwd_dict, back_dict, npos, nneg = (
+      make_canon_connects(connects, order=order, open_order=open_order))
+  if order is None:
+    nm_order = np.arange(npos) + 1
+  else:
+    nm_order = np.array([fwd_dict[ele] for ele in order])
+  
+  if np.min(np.abs(np.concatenate(nm_connects))) == 0:
+    is_one_based = False
+  else:
+    is_one_based = True
+
+  # build dictionary between original and canonical dims
+  if dims is None:
+    dims = []
+    for tensor in connects:
+      dims.append(['d'] * len(tensor))
+  nm_dims, fwd_dim_dict, rev_dim_dict = make_canon_dims(dims)
+
+  # check validity of network
+  check_network(nm_connects, nm_dims, nm_order, back_dict, rev_dim_dict)
+
+  # compute contraction costs
+  pt_cont, bn_cont = identify_cont_labels(nm_connects, nm_order)
+  bn_costs = compute_costs(nm_connects, order=nm_order, dims=dims,
+                           return_pt=False)
 
   # initialize figure
-  ax1 = curr_fig.add_subplot(subplot, aspect='equal')
-
-  # make adjacency matrix
-  adjmat = _ncon_to_adjmat(connects)
-  N = adjmat.shape[0]
+  if fig is None:
+    fig = plt.figure(figsize=(figsize,figsize))
+  ax1 = fig.add_subplot(subplot, aspect='equal')
   
   # make palettes for tensors and for markers
   tensor_palette = ['mediumspringgreen', 'cornflowerblue', 'plum', 'lightskyblue',
@@ -44,8 +76,10 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
   line_set = ['solid', 'dashed', 'dashdot', 'dotted']
 
   # generate default names
-  if names is None:
+  if names=='default':
     names = [f"T{lab}" for lab in range(N)]
+  elif names is None:
+    names = ['' for lab in range(N)]
 
   # generate default tensor colors
   if colors is None:
@@ -65,6 +99,16 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
     for k in range(N):
       thet = k * angle_space + init_angle
       coords[k] = (-R * np.cos(thet), R * np.sin(thet))
+
+  if vacant_coord is not None:
+    coords.append(vacant_coord)
+    flat_connects = np.concatenate(nm_connects)
+    neg_inds = flat_connects[np.where(flat_connects <= 0)[0]]
+    nm_connects.append(np.sort(neg_inds)[::-1])
+    N = len(coords)
+
+  # make adjacency matrix
+  adjmat = _ncon_to_adjmat(nm_connects)
 
   # generate types: 0=circ, 1=rect, 2=env
   env_loc = -1
@@ -102,29 +146,100 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
   ymaxB = ymaxB + 1 + env_pad[1]
 
   if env_loc >= 0:
-    # draw the environment tensor
-    env_thick = coords[env_loc]
-    env_width = xmaxB - xminB
-    env_height = ymaxB - yminB
-    col_lab = np.mod(colors[env_loc], num_tcols)
-    ax1.add_patch(patches.Rectangle((xminB - env_thick, yminB - env_thick), 
-                                    env_width + 2*env_thick, 
-                                    env_height + 2*env_thick, edgecolor='k', 
-                                    facecolor=tensor_palette[col_lab], 
-                                    linewidth=2))
-    ax1.add_patch(patches.Rectangle((xminB, yminB), 
-                                    env_width, 
-                                    env_height, edgecolor='k', 
-                                    facecolor=bkg_col, 
-                                    linewidth=2))
-    
-    t = ax1.text(0.5*(xminB + xmaxB), ymaxB + 0.5*env_thick, names[env_loc], 
-                 fontsize=fontsize, 
-                 horizontalalignment='center',
-                 verticalalignment='center',
-                 color='white')
-    t.set_path_effects([path_effects.Stroke(linewidth=2, foreground='black'),
-                       path_effects.Normal()])
+    temp_len = 2
+    if vacant_coord is not None:
+      if isinstance(vacant_coord,(int,float)):
+        vacant_coord = (vacant_coord,)
+      temp_len = len(vacant_coord)
+
+    if temp_len > 1:
+      # draw the environment tensor
+      env_thick = coords[env_loc]
+      env_width = xmaxB - xminB
+      env_height = ymaxB - yminB
+      col_lab = np.mod(colors[env_loc], num_tcols)
+      ax1.add_patch(patches.Rectangle((xminB - env_thick, yminB - env_thick), 
+                                      env_width + 2*env_thick, 
+                                      env_height + 2*env_thick, edgecolor='k', 
+                                      facecolor=tensor_palette[col_lab], 
+                                      linewidth=2))
+      ax1.add_patch(patches.Rectangle((xminB, yminB), 
+                                      env_width, 
+                                      env_height, edgecolor='k', 
+                                      facecolor=bkg_col, 
+                                      linewidth=2))
+      
+      t = ax1.text(0.5*(xminB + xmaxB), ymaxB + 0.5*env_thick, names[env_loc], 
+                  fontsize=fontsize, 
+                  horizontalalignment='center',
+                  verticalalignment='center',
+                  color='white')
+      t.set_path_effects([path_effects.Stroke(linewidth=2, foreground='black'),
+                        path_effects.Normal()])
+
+  # draw partial traces
+  for k0, connect in enumerate(nm_connects):
+    uni_connect, counts = np.unique(connect, return_counts=True)
+    if any(counts > 1):
+      locs = np.where(counts > 1)[0]
+      ind_pos = np.zeros((2,len(locs)), dtype=int)
+      ind_names0 = np.zeros(len(locs), dtype=int)
+      for k, ind in enumerate(locs):
+        ind_pos[:,k] = np.where(connect==uni_connect[ind])[0]
+        ind_names0[k] = uni_connect[ind]
+
+      # find tensor midpoints and index endpoints
+      if ttypes[k0]==0:
+        xmid = coords[k0][0] 
+        ymid = coords[k0][1] 
+        x0 = xmid
+        x1 = xmid
+        y0 = ymid + 0.8*circ_rad
+        y1 = ymid - 0.8*circ_rad
+      elif ttypes[k0]==1:
+        xmid = 0.5 * (coords[k0][0] + coords[k0][2])
+        ymid = 0.5 * (coords[k0][1] + coords[k0][3])
+        y_width = np.abs(coords[k0][1] - coords[k0][3])
+        x0 = xmid
+        x1 = xmid
+        y0 = ymid + 0.4*y_width
+        y1 = ymid - 0.4*y_width
+      elif ttypes[k0]==2:
+        xmid = 0.5 * (xminB + xmaxB)
+        ymid = 0.5 * (yminB + ymaxB)
+        y_width = np.abs(ymaxB - yminB)
+        x0 = xmid
+        x1 = xmid
+        y0 = ymid + 0.8*y_width
+        y1 = ymid - 0.8*y_width
+      
+      # determine tag colors and shapes
+      pos0 = ind_pos[0,:]
+      pos1 = ind_pos[1,:]
+      ind_names = [back_dict[name] for name in ind_names0]
+      num_con = len(pos0)
+      mark0 = [0]*num_con
+      mark1 = [0]*num_con
+      color0 = [0]*num_con
+      color1 = [0]*num_con
+      for count in range(num_con):
+        mtemp0, ctemp0 = np.divmod(pos0[count].item(), num_mcols)
+        mtemp1, ctemp1 = np.divmod(pos1[count].item(), num_mcols)
+        color0[count] = marker_palette[ctemp0]
+        color1[count] = marker_palette[ctemp1]
+        mark0[count] = marker_set[mtemp0]
+        mark1[count] = marker_set[mtemp1]
+
+      line_col = 'k'
+      line_type = 'solid'
+      col_lab = np.mod(colors[k0], num_tcols)
+      _draw_multi(x0, x1, y0, y1, num_inds=num_con,  
+                  color=line_col, color0=color0, color1=color1, 
+                  line_type=line_type, marker0=mark0, marker1=mark1, 
+                  markersize=tagsize, t_name=ind_names, fontsize=fontsize, 
+                  draw_labels=draw_labels, ax1=ax1, 
+                  bkg_col=tensor_palette[col_lab], 
+                  linewidth=linewidth, spacing=spacing)
 
   # draw closed indices  
   x_residue = np.zeros(N, dtype=np.float)
@@ -244,7 +359,12 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
         y_residue[p0] = y_residue[p0] - np.sin(thet) * circ_rad
 
         # determine index colors and linetypes
-        if show_costs:
+        show_cols = True
+        if vacant_coord is not None:
+          if max(p0,k0) == (N-1):
+            show_cols = False
+
+        if show_costs and show_cols:
           cont_inds = np.intersect1d(nm_connects[k0], nm_connects[p0])
           for count, inds in enumerate(bn_cont):
             if len(np.intersect1d(inds, cont_inds)) > 0:
@@ -257,8 +377,9 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
           line_type = 'solid'
 
         # determine tag colors and shapes
-        ind_names, pos0, pos1 = np.intersect1d(connects[k0],connects[p0], 
+        ind_names0, pos0, pos1 = np.intersect1d(nm_connects[k0],nm_connects[p0], 
                                                 return_indices=True)
+        ind_names = [back_dict[name] for name in ind_names0]
         num_con = adjmat[k0,p0]
         mark0 = [0]*num_con
         mark1 = [0]*num_con
@@ -334,7 +455,10 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
       t_names = [0] * num_inds
       locs = np.where(np.array(nm_connects[k], dtype=int) <= 0)[0]
       for count, loc in enumerate(locs):
-        val0 = np.abs(nm_connects[k][loc]) - 1
+        if is_one_based:
+          val0 = np.abs(nm_connects[k][loc]) - 1
+        else:
+          val0 = np.abs(nm_connects[k][loc]) 
         mar0, col0 = np.divmod(loc, num_mcols)
         mar1, col1 = np.divmod(val0, num_mcols)
         color0[count] = marker_palette[col0]
@@ -352,7 +476,11 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
                   bkg_col=bkg_col, linewidth=linewidth, spacing=spacing)
 
   # draw tensors
-  for k in range(N):
+  if vacant_coord is not None:
+    N0 = N-1
+  else:
+    N0 = N
+  for k in range(N0):
     if ttypes[k] != 2: 
       col_lab = np.mod(colors[k], num_tcols)
       _draw_tensor(ax1, coords=coords[k], radius=circ_rad, 
@@ -365,15 +493,16 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
                 'fontweight' : 'bold',
                 'verticalalignment': 'baseline',
                 'horizontalalignment': 'center'}
-    plt.title(title, fontdict=fontdict, loc='center', pad=30)
+    plt.title(title, fontdict=fontdict, loc='center', pad=0)
 
   # extend the figure to make room for the legend (hacky...)
   if show_costs:
-    plt.plot([xmaxB, xmaxB + legend_extend], [ymaxB, ymaxB], color=bkg_col,
+    plt.plot([xmaxB, xmaxB + legend_extend], 
+             [0.5*(ymaxB+yminB), 0.5*(ymaxB+yminB)], color=bkg_col,
              linewidth=0, linestyle='solid')
 
   # make plot
-  curr_fig.patch.set_facecolor(bkg_col)
+  fig.patch.set_facecolor(bkg_col)
   plt.axis('off')
   plt.axis('scaled')
 
@@ -396,8 +525,53 @@ def draw_network(curr_fig, connects, names=None, coords=None, colors=None,
     frame.set_color('darkgrey')
     legend.get_frame().set_edgecolor('k')
 
+  return fig
+
+def draw_network_interactive():
+  """ Generates the set of widgets for the network renderer """
+
+  tagsize = widgets.IntSlider(min=0, max=16, value=8, step=2, 
+                              description="Tag size", 
+                              continuous_update=False)
+  fontsize = widgets.IntSlider(min=0, max=24, value=16, step=2, 
+                              description="Font size", 
+                              continuous_update=False)
+  legend_extend = widgets.FloatSlider(min=-1, max=3, value=1.5, step=0.5, 
+                                      description="Legend Pos", 
+                                      continuous_update=False)
+  figsize = widgets.IntSlider(min=4, max=20, value=10, step=2, 
+                              description="Fig size", 
+                              continuous_update=False)
+  circ_rad = widgets.FloatSlider(min=0, max=1, value=0.3, step=0.1, 
+                                description="Circle size", 
+                                continuous_update=False)
+  spacing = widgets.FloatSlider(min=0.025, max=0.25, value=0.125, step=0.025, 
+                                description="Line spacing", 
+                                continuous_update=False)
+  linewidth = widgets.FloatSlider(min=0.5, max=5, value=2.5, step=0.5, 
+                                  description="Line width", 
+                                  continuous_update=False)
+  show_costs = widgets.Checkbox(value=False, description='Show costs') 
+  draw_labels = widgets.Checkbox(value=True, description='Draw labels')   
+  bkg_col = widgets.Dropdown(options=[('silver', 'silver'), ('white', 'white'), 
+                                      ('light blue', 'lightsteelblue'), 
+                                      ('light cyan', 'lightcyan')], 
+                            value='silver', description='Background color:')
+
+  ui = widgets.VBox([show_costs,draw_labels,tagsize, fontsize, figsize,
+                    legend_extend,circ_rad,spacing,linewidth,bkg_col])
+
+  widget_dict = {'tagsize': tagsize, 'fontsize': fontsize, 'figsize': figsize, 
+                'legend_extend': legend_extend, 'circ_rad':circ_rad, 
+                'spacing':spacing, 'linewidth':linewidth,'show_costs':show_costs,
+                'draw_labels':draw_labels, 'bkg_col':bkg_col}
+
+  out = widgets.interactive_output(draw_config, widget_dict)
+  display(widgets.HBox([ui,out]))
+  return
+
 def _endpoints_rect_circ(coords0, coords1, circ_rad):
-  " Determine the position of indices connecting circle and rectangle "
+  """ Determine the position of indices connecting circle and rectangle """
 
   # find angle between tensors
   xmin = min(coords1[0], coords1[2])
@@ -455,7 +629,7 @@ def _endpoints_rect_circ(coords0, coords1, circ_rad):
   return thet, x0, y0, x1, y1
 
 def _endpoints_rect_rect(coords0, coords1):
-  " Determine the position of indices connecting two rectangular shapes "
+  """ Determine the position of indices connecting two rectangular shapes """
 
   # determine boundings
   xkmin = min(coords0[0], coords0[2])
@@ -519,6 +693,7 @@ def _endpoints_rect_rect(coords0, coords1):
 
 def _draw_tensor(ax1, coords=(0,0), radius=0.5, color='white', fontsize=12, 
                 name=None):
+  """ Draws a single tensor with its name """
   
   if len(coords)==4:
     # draw rectangle
@@ -560,6 +735,7 @@ def _draw_multi(x0, x1, y0, y1, num_inds=1, xf=None, yf=None, color='k',
                 marker1=None, markersize=8, t_name=None, fontsize=16, 
                 draw_labels=True, ax1=None, bkg_col='w', linewidth=2, 
                 spacing=0.1):
+  """ Draw a single or multiple parallel indices between two points """
   
   # scale font smaller for compound indices 
   fontsize = (1 / (0.75 + 0.25*num_inds)) * fontsize
@@ -606,6 +782,9 @@ def _draw_multi(x0, x1, y0, y1, num_inds=1, xf=None, yf=None, color='k',
   
     # plot index label
     if draw_labels:
+      # draw invisible object (just for bounding purposes) 
+      plt.plot([xfp], [yfp], markersize=0, color=bkg_col)
+
       t = ax1.text(xfp, yfp, t_name[count], 
                     fontsize=fontsize, 
                     horizontalalignment='center',
@@ -615,7 +794,7 @@ def _draw_multi(x0, x1, y0, y1, num_inds=1, xf=None, yf=None, color='k',
                         path_effects.Normal()])
 
 def _gen_angle(x0,y0,x1,y1):
-  """ Generate angle between points relative to the +ve x-axis"""
+  """ Generate angle between points relative to the +ve x-axis """
 
   tol = 1e-8
   if np.abs(x0 - x1) < tol:
@@ -637,7 +816,62 @@ def _gen_angle(x0,y0,x1,y1):
 
   return thet
 
+def identify_cont_labels(connects, order):
+  """ 
+  Identify the labels involved in each tensor contraction (either a partial 
+  trace or a binary tensor contraction).
+  """
+
+  # build dictionary between original and canonical labels
+  nml_connects, fwd_dict, rev_dict, npos, nneg = make_canon_connects(connects)
+
+  nml_order = [ele for ele in order]
+  nml_connects = [ele for ele in connects]
+
+  # indentify partial trace indices to be contracted
+  pt_cont = []
+  for count, sublist in enumerate(nml_connects):
+    uni_labs, uni_locs = np.unique(sublist, return_index=True)
+    num_cont = len(sublist) - len(uni_labs)
+    if num_cont > 0:
+      dup_list = []
+      for ele in uni_labs:
+        temp_locs = np.where(sublist == ele)[0]
+        if len(temp_locs) == 2:
+          dup_list.append(ele)
+          sublist = np.delete(sublist, temp_locs)
+          nml_order = np.delete(nml_order, nml_order==ele)
+      
+      pt_cont.append(np.array(dup_list))
+      nml_connects[count] = sublist
+
+  # indentify binary contraction indices 
+  bn_cont = []
+  while len(nml_order) > 0:
+    locs = [ele for ele in range(len(nml_connects)) 
+            if sum(nml_connects[ele] == nml_order[0]) > 0]
+
+    cont_many, A_cont, B_cont = np.intersect1d(
+        nml_connects[locs[0]],
+        nml_connects[locs[1]],
+        assume_unique=True,
+        return_indices=True)
+    
+    bn_cont.append(cont_many)
+    nml_connects.append(np.concatenate((
+      np.delete(nml_connects[locs[0]], A_cont),
+      np.delete(nml_connects[locs[1]], B_cont))))
+    del nml_connects[locs[1]]
+    del nml_connects[locs[0]]
+    nml_order = np.delete(nml_order, np.intersect1d(nml_order, 
+                                                    cont_many, 
+                                                    return_indices=True)[1])
+    
+  return pt_cont, bn_cont
+
 def _ncon_to_adjmat(labels: List[List[int]]):
+  """ Generate an adjacency matrix from the network connections. """
+
   # process inputs
   N = len(labels)
   ranks = [len(labels[i]) for i in range(N)]
