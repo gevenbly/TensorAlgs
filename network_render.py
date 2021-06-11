@@ -529,7 +529,7 @@ def draw_network(connects, names='default', coords=None, colors=None,
 
   return fig
 
-def draw_network_interactive():
+def draw_network_interactive(draw_config):
   """ Generates the set of widgets for the network renderer """
 
   tagsize = widgets.IntSlider(min=0, max=16, value=8, step=2, 
