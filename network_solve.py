@@ -10,6 +10,34 @@ Original file is located at
 import numpy as np
 from typing import Optional, List, Union, Tuple
 
+def call_solver(tensors: List[np.ndarray],
+                labels: List[List[int]],
+                max_branch: Optional[int] = None,
+                order: Optional[List[int]] = None):
+  """
+  Solve for the contraction order of a tensor network (encoded in the `ncon`
+  syntax) that minimizes the computational cost.
+  Args:
+    tensors: list of the tensors in the network.
+    labels: list of the tensor connections (in standard `ncon` format).
+    max_branch: maximum number of contraction paths to search at each step.
+  Returns:
+    np.ndarray: the cheapest contraction order found (in ncon format).
+    float: the cost of the network contraction, given as log10(total_FLOPS).
+    bool: specifies if contraction order is guaranteed optimal.
+  """
+  # build log-adjacency matrix
+  log_adj = ncon_to_weighted_adj(tensors, labels)
+
+  # run search algorithm
+  node_order, costs, is_optimal = full_solve_complete(
+      log_adj, max_branch=max_branch)
+
+  # put contraction order back into ncon format
+  order = ord_to_ncon(labels, node_order)
+
+  return order, costs, is_optimal
+
 def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
   """
   Produces a `ncon` compatible index contraction order from the sequence of
