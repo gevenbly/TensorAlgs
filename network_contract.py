@@ -82,8 +82,15 @@ def xcon(tensors_in, connects_in, order=None, open_order=None, which_envs=None,
 
   # use simple contraction scheme if envs are not required
   if which_envs is None:
-    return ncon(tensors, connects, order=order_new, perform_check=False,
-                return_info=return_info)
+    if standardize_inputs and return_info:
+      tensor_out, order_out, cost = ncon(
+          tensors, connects, order=order_new, perform_check=False, 
+          return_info=return_info)
+      order_out = [rev_dict[ele] for ele in order_out]
+      return tensor_out, order_out, cost
+    else:
+      return ncon(tensors, connects, order=order_new, perform_check=False,
+                  return_info=return_info)
 
   # do all partial traces
   tot_cost = 0
