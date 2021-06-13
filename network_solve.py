@@ -84,13 +84,13 @@ def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
 
   return con_order
 
-def ncon_to_weighted_adj(dimss: List[Tuple], labels: List[List[int]]):
+def ncon_to_weighted_adj(dims: List[Tuple], labels: List[List[int]]):
   """
   Create a log-adjacency matrix, where element [i,j] is the log10 of the total
   dimension of the indices connecting ith and jth tensors, for a network
   defined in the `ncon` syntax.
   Args:
-    tensors: list of the tensors in the network.
+    dims: list containing the shape of each tensor in the network.
     labels: list of the tensor connections (in standard `ncon` format).
   Returns:
     np.ndarray: the log-adjacency matrix.
@@ -111,11 +111,11 @@ def ncon_to_weighted_adj(dimss: List[Tuple], labels: List[List[int]]):
     tnr = tensor_counter[flat_labels == ele]
     ind = index_counter[flat_labels == ele]
     if len(ind) == 1:  # external index
-      log_adj[tnr[0], tnr[0]] += np.log10(tensors[tnr[0]][ind[0]])
+      log_adj[tnr[0], tnr[0]] += np.log10(dims[tnr[0]][ind[0]])
     elif len(ind) == 2:  # internal index
       if tnr[0] != tnr[1]:  # ignore partial traces
-        log_adj[tnr[0], tnr[1]] += np.log10(tensors[tnr[0]][ind[0]])
-        log_adj[tnr[1], tnr[0]] += np.log10(tensors[tnr[0]][ind[0]])
+        log_adj[tnr[0], tnr[1]] += np.log10(dims[tnr[0]][ind[0]])
+        log_adj[tnr[1], tnr[0]] += np.log10(dims[tnr[0]][ind[0]])
 
   return log_adj
 
