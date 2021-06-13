@@ -10,7 +10,7 @@ Original file is located at
 import numpy as np
 from typing import Optional, List, Union, Tuple
 
-def call_solver(tensors: List[np.ndarray],
+def call_solver(tensors: Union[List[np.ndarray], List[tuple]],
                 labels: List[List[int]],
                 max_branch: Optional[int] = None,
                 order: Optional[List[int]] = None):
@@ -18,7 +18,8 @@ def call_solver(tensors: List[np.ndarray],
   Solve for the contraction order of a tensor network (encoded in the `ncon`
   syntax) that minimizes the computational cost.
   Args:
-    tensors: list of the tensors in the network.
+    tensors: a list of the tensors in the network or a list of the shapes of
+      the tensors in the network.
     labels: list of the tensor connections (in standard `ncon` format).
     max_branch: maximum number of contraction paths to search at each step.
   Returns:
@@ -26,8 +27,14 @@ def call_solver(tensors: List[np.ndarray],
     float: the cost of the network contraction, given as log10(total_FLOPS).
     bool: specifies if contraction order is guaranteed optimal.
   """
+  # extract tensor shapes if necessary
+  if not isinstance(tensors[0], tuple):
+    dims = [tensor.shape for tensor in tensors]
+  else:
+    dims = tensors
+
   # build log-adjacency matrix
-  log_adj = ncon_to_weighted_adj(tensors, labels)
+  log_adj = ncon_to_weighted_adj(dims, labels)
 
   # run search algorithm
   node_order, costs, is_optimal = full_solve_complete(
@@ -77,7 +84,7 @@ def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
 
   return con_order
 
-def ncon_to_weighted_adj(tensors: List[np.ndarray], labels: List[List[int]]):
+def ncon_to_weighted_adj(dimss: List[Tuple], labels: List[List[int]]):
   """
   Create a log-adjacency matrix, where element [i,j] is the log10 of the total
   dimension of the indices connecting ith and jth tensors, for a network
@@ -104,11 +111,11 @@ def ncon_to_weighted_adj(tensors: List[np.ndarray], labels: List[List[int]]):
     tnr = tensor_counter[flat_labels == ele]
     ind = index_counter[flat_labels == ele]
     if len(ind) == 1:  # external index
-      log_adj[tnr[0], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
+      log_adj[tnr[0], tnr[0]] += np.log10(tensors[tnr[0]][ind[0])
     elif len(ind) == 2:  # internal index
       if tnr[0] != tnr[1]:  # ignore partial traces
-        log_adj[tnr[0], tnr[1]] += np.log10(tensors[tnr[0]].shape[ind[0]])
-        log_adj[tnr[1], tnr[0]] += np.log10(tensors[tnr[0]].shape[ind[0]])
+        log_adj[tnr[0], tnr[1]] += np.log10(tensors[tnr[0]][ind[0])
+        log_adj[tnr[1], tnr[0]] += np.log10(tensors[tnr[0]][ind[0])
 
   return log_adj
 
