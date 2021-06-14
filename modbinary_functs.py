@@ -7,6 +7,27 @@ Original file is located at
     https://colab.research.google.com/drive/1hZreriutD3tmqJvucJIV11whE4lfmwTb
 """
 
+import numpy as np
+from numpy import linalg as LA
+from scipy.sparse.linalg import eigsh
+from typing import Optional, List, Union, Tuple
+from network_helpers import (
+    tprod, orthogonalize, expand_dims, matricize)
+
+"""
+modbinary_functs
+
+- define_ham
+- initialize
+- define_networks
+- lift_hamiltonian
+- lower_density
+- optimize_w
+- optimize_v
+- optimize_u
+- modbinary_optimize
+"""
+
 def define_ham(blocksize):
   """ 
   Define Hamiltonian (quantum critical Ising), perform preliminary blocking 
