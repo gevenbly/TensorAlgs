@@ -11,8 +11,11 @@ import numpy as np
 from numpy import linalg as LA
 from scipy.sparse.linalg import eigsh
 from typing import Optional, List, Union, Tuple
+from IPython.display import clear_output 
 from network_helpers import (
     tprod, orthogonalize, expand_dims, matricize)
+from network_contract import solve_order, xcon
+from network_render import draw_network
 
 """
 modbinary_functs
@@ -113,47 +116,54 @@ def initialize(chi, chimid, hamAB_init, hamBA_init, layers):
 def define_networks(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA):
   """ Define and plot all principle networks """
 
+  # Define symbolic tensor dimensions
+  dim_w = ['chi','m','chi']
+  dim_v = ['chi','m','chi']
+  dim_u = ['chi','chi','m','m']
+  dim_ham = ['chi', 'chi', 'chi', 'chi']
+  dim_rho = ['chi', 'chi', 'chi', 'chi']
+
   # Define the `M` principle network
   connects_M = [[3,5,9], [1,5,7], [1,2,3,4], [4,6,10], [2,6,8], [7,8,9,10]]
   tensors_M = [vC, vC, hamBA, wC, wC, rhoAB]
-  order_M = ncon_solver(tensors_M, connects_M)[0]
-  dims_M = [tensor.shape for tensor in tensors_M]
+  order_M = solve_order(tensors_M, connects_M)[0]
   names_M = ['v', 'v', 'hBA', 'w', 'w', 'rhoAB']
   coords_M = [(-0.5,1),(-0.5,-1), (-0.3,-0.2,0.3,0.2),(0.5,1),(0.5,-1),(0.2)]
   colors_M = [0,0,1,2,2,3]
+  dims_M = [dim_v, dim_v, dim_ham, dim_w, dim_w, dim_rho]
 
   # Define the `L` principle network
   connects_L = [[3,6,13], [1,8,11], [4,5,6,7], [2,5,8,9], [1,2,3,4], 
                 [10,7,14], [10,9,12], [11,12,13,14]]
   tensors_L = [wC, wC, uC, uC, hamAB, vC, vC, rhoBA]
-  order_L = ncon_solver(tensors_L, connects_L)[0]
-  dims_L = [tensor.shape for tensor in tensors_L]
+  order_L = solve_order(tensors_L, connects_L)[0]
   names_L = ['w', 'w', 'u', 'u', 'hAB', 'v', 'v', 'rhoBA']
   coords_L = [(-0.5, 1.5), (-0.5, -1.5), (-0.3,0.5,0.3,0.9), (-0.3,-0.5,0.3,-0.9), 
               (-0.6,-0.2,-0.1,0.2), (0.5, 1.5), (0.5, -1.5), (0.2)]
   colors_L = [2,2,4,4,1,0,0,3]
+  dims_L = [dim_w, dim_w, dim_u, dim_u, dim_ham, dim_v, dim_v, dim_rho]
 
   # Define the `C` principle network
   connects_C = [[5,6,13], [5,9,11], [3,4,6,8], [1,2,9,10], [1,2,3,4], [7,8,14],
                 [7,10,12], [11,12,13,14]]
   tensors_C = [wC, wC, uC, uC, hamBA, vC, vC, rhoBA]
-  order_C = ncon_solver(tensors_C, connects_C)[0]
-  dims_C = [tensor.shape for tensor in tensors_C]
+  order_C = solve_order(tensors_C, connects_C)[0]
   names_C = ['w', 'w', 'u', 'u', 'hBA', 'v', 'v', 'rhoBA']
   coords_C = [(-0.5, 1.5), (-0.5, -1.5), (-0.3,0.5,0.3,0.9), (-0.3,-0.5,0.3,-0.9), 
               (-0.3,-0.2,0.3,0.2), (0.5, 1.5), (0.5, -1.5), (0.2)]
   colors_C = [2,2,4,4,1,0,0,3]
+  dims_C = [dim_w, dim_w, dim_u, dim_u, dim_ham, dim_v, dim_v, dim_rho]
 
   # Define the `R` principle network
   connects_R = [[10,6,13], [10,8,11], [5,3,6,7], [5,1,8,9], [1,2,3,4], [4,7,14],
                 [2,9,12], [11,12,13,14]]
   tensors_R = [wC, wC, uC, uC, hamAB, vC, vC, rhoBA]
-  order_R = ncon_solver(tensors_R, connects_R)[0]
-  dims_R = [tensor.shape for tensor in tensors_R]
+  order_R = solve_order(tensors_R, connects_R)[0]
   names_R = ['w', 'w', 'u', 'u', 'hAB', 'v', 'v', 'rhoBA']
   coords_R = [(-0.5, 1.5), (-0.5, -1.5), (-0.3,0.5,0.3,0.9), (-0.3,-0.5,0.3,-0.9), 
               (0.6,-0.2,0.1,0.2), (0.5, 1.5), (0.5, -1.5), (0.2)]
   colors_R = [2,2,4,4,1,0,0,3]
+  dims_R = [dim_w, dim_w, dim_u, dim_u, dim_ham, dim_v, dim_v, dim_rho]
 
   # Plot all principle networks
   fig = plt.figure(figsize=(24,24))
@@ -327,6 +337,13 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
                        mtype='finite', display_step=10, en_shift=0, en_exact=0,
                        blocksize=1, iterations=100):
 
+  # Initialize display output
+  clear_output()
+  max_display = 10
+  min_display = 5
+  num_display = 0
+  display_strings = [''] * min_display
+
   # add extra layers if necessary
   if layers is not None:
     for k in range(layers - len(wC)):
@@ -421,13 +438,26 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
                                         ref_sym=ref_sym)
     
     # evaluate energy
-    if np.remainder(iter,display_step) == 1:
+    if np.remainder(iter+1,display_step) == 0:
       energy0 = (np.trace(matricize(rhoAB[0]) @ matricize(hamAB[0])) +
                 np.trace(matricize(rhoBA[0]) @ matricize(hamBA[0])))
       energy = 0.5*(energy0 / blocksize) + en_shift
-      log_err = -np.log10(energy - en_exact)
-      print('Iter {iter} of {iterations}, Energy: {energy:.10f}, Log10-Err: {log_err:0.3f}'
-          .format(iter=iter, iterations=iterations, energy=energy, 
-                  log_err=log_err))
-  
+      log_err = np.log10(energy - en_exact)
+
+      # print to console
+      if num_display > max_display:
+        clear_output()
+        for string in display_strings:
+          print(string)
+        num_display = 0 
+      else:
+        num_display += 1
+      
+      temp_string = ('Iter {iter} of {iterations}, Energy: {energy:.10f}, '
+      'Log10-Err: {log_err:0.3f}'.format(iter=iter, iterations=iterations, 
+                                          energy=energy, log_err=log_err))
+      del display_strings[0]
+      display_strings.append(temp_string)
+      print(temp_string)
+
   return hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, energy
