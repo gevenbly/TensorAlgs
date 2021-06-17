@@ -9,6 +9,7 @@ Original file is located at
 
 import numpy as np
 from typing import Optional, List, Union, Tuple
+from network_helpers import intersect_lists
 
 def call_solver(tensors: Union[List[np.ndarray], List[tuple]],
                 labels: List[List[int]],
@@ -59,29 +60,23 @@ def ord_to_ncon(labels: List[List[int]], orders: np.ndarray):
 
   N = len(labels)
   orders = orders.reshape(2, N - 1)
-  new_labels = [np.array(labels[i]) for i in range(N)]
-  con_order = np.zeros([0], dtype=int)
-
-  # remove all partial trace indices
+  new_labels = [label.copy() for label in labels]
+  
+  con_order = []
   for counter, temp_label in enumerate(new_labels):
-    uni_inds, counts = np.unique(temp_label, return_counts=True)
-    tr_inds = uni_inds[np.flatnonzero(counts == 2)]
-    con_order = np.concatenate((con_order, tr_inds))
-    new_labels[counter] = temp_label[np.isin(temp_label, uni_inds[counts == 1])]
-
+    tr_inds = [label for k, label in enumerate(temp_label) if label in temp_label[(k+1):]]
+    con_order += tr_inds
+    new_labels[counter] = [label for k, label in enumerate(temp_label) if 
+                           k not in tr_inds]
   for i in range(N - 1):
     # find common indices between tensor pair
-    cont_many, A_cont, B_cont = np.intersect1d(
-        new_labels[orders[0, i]], new_labels[orders[1, i]], return_indices=True)
-    temp_labels = np.append(
-        np.delete(new_labels[orders[0, i]], A_cont),
-        np.delete(new_labels[orders[1, i]], B_cont))
-    con_order = list(np.concatenate((con_order, cont_many), axis=0))
+    cont_many, A_cont, B_cont, exclusive = intersect_lists(
+        new_labels[orders[0, i]], new_labels[orders[1, i]])
+    con_order += cont_many
 
     # build new set of labels
-    new_labels[orders[0, i]] = temp_labels
+    new_labels[orders[0, i]] = exclusive
     del new_labels[orders[1, i]]
-
   return con_order
 
 def ncon_to_weighted_adj(dims: List[Tuple], labels: List[List[int]]):

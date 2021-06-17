@@ -20,6 +20,18 @@ network_helpers
 - orthogonalize
 """
 
+def intersect_lists(listA, listB):
+  """ 
+  Intersection of two lists, positions of intersecting elements and exclusive
+  elements. 
+  """  
+  locsA = [k for k, ele in enumerate(listA) if ele in listB]
+  common = [listA[k] for k in locsA]
+  locsB = [listB.index(ele) for ele in common if ele in common]  
+  exclusive = [ele for ele in (listA + listB) if ele not in common]
+    
+  return list(common), list(locsA), locsB, exclusive
+
 def expand_dims(tensor, new_dims):
   """ 
   Expand the dims of a tensor by padding with zeros.

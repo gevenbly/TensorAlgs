@@ -54,7 +54,7 @@ def draw_network(connects, names='default', coords=None, colors=None,
   nm_dims, fwd_dim_dict, rev_dim_dict = make_canon_dims(dims)
 
   # check validity of network
-  check_network(nm_connects, nm_dims, nm_order, back_dict, rev_dim_dict)
+  check_network(nm_connects, nm_dims, nm_order)
 
   # compute contraction costs
   pt_cont, bn_cont = identify_cont_labels(nm_connects, nm_order)

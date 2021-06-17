@@ -66,14 +66,14 @@ nodes0 = np.array([[2, 16, 237],
                    [63, 64, 128]], dtype=int)
 which_envs0 = 0
 node_labs0, needed_conts0 = reorder_nodes(nodes0, which_envs0)
-node_labs0_ex = np.array([2,4,8,16,18,26,32,64,128,192,224,228,254], dtype=int)
+node_labs0_ex = [2,4,8,16,18,26,32,64,128,192,224,228,254]
 needed_conts0_ex = np.array([[1,0,0],
                              [1,0,0],
                              [0,0,1],
                              [0,1,0],
                              [0,0,1],
                              [0,0,1]],dtype=bool)
-assert np.array_equal(node_labs0, node_labs0_ex), (
+assert node_labs0==node_labs0_ex, (
     'mis-match in node labels: {n0} vs {n1}'.format(
         n0=node_labs0, n1=node_labs0_ex))
 assert np.array_equal(needed_conts0, needed_conts0_ex), (
@@ -88,15 +88,15 @@ nodes1 = np.array([[2, 16, 237],
                    [63, 64, 128]], dtype=int)
 which_envs1 = [1,3,5]
 node_labs1, needed_conts1 = reorder_nodes(nodes1, which_envs1)
-node_labs1_ex = np.array([1,2,4,8,16,18,26,27,31,32,64,128,192,223,224,228,229,
-                          237,247,253], dtype=int)
+node_labs1_ex = [1,2,4,8,16,18,26,27,31,32,64,128,192,223,224,228,229,
+                 237,247,253]
 needed_conts1_ex = np.array([[1,0,1],
                              [1,1,1],
                              [1,1,0],
                              [1,1,0],
                              [0,1,1],
                              [0,0,1]],dtype=bool)
-assert np.array_equal(node_labs1, node_labs1_ex), (
+assert node_labs1 == node_labs1_ex, (
     'mis-match in node labels: {n0} vs {n1}'.format(
         n0=node_labs1, n1=node_labs1_ex))
 assert np.array_equal(needed_conts1, needed_conts1_ex), (
@@ -114,7 +114,7 @@ nodes = np.array([[2, 16, 237],
                   [63, 64, 128]], dtype=int)
 which_env = 0
 order = node_to_order(connects, nodes, which_env)
-order_ex = [1, 2, 8, 12, 10, 14, 7, 4, 5, 9, 11]
+order_ex = [1, 2, 8, 12, 10, 14, 7, 5, 9, 11, 4]
 assert order==order_ex, ('mis-match orders: {n0} vs {n1}'.format(
     n0=order, n1=order_ex))
 
@@ -128,7 +128,7 @@ nodes = np.array([[2, 16, 237],
                   [63, 64, 128]], dtype=int)
 which_env = 3
 order = node_to_order(connects, nodes, which_env)
-order_ex = [1, 12, 10, 14, 7, 6, 13, 3, 4, 11]
+order_ex = [1, 12, 10, 14, 7, 6, 13, 11, 3, 4]
 assert order==order_ex, ('mis-match orders: {n0} vs {n1}'.format(
     n0=order, n1=order_ex))
 
@@ -294,12 +294,12 @@ order = [1, 2, 'a', 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 'b', 16]
 N = len(connects)
 
 new_connects, new_order, open_ord = remove_tensor(
-    connects, which_env, order=order, standardize_outputs=False)
+    connects, which_env, order=order, relabel_outputs=False)
 new_connects_ex = [connect for connect in connects]
 
 open_ord_ex = new_connects_ex.pop(which_env)
 
-new_order_ex = [1, 2, 8, 'a', 'b', 12, 10, 14, 9, 11, 13]
+new_order_ex = [1, 2, 8, 'a', 'b', 12, 10, 14, 13, 9, 11]
 
 orig_cost = compute_costs(connects, order)[:(N-2)]
 orig_cost.sort()
@@ -324,11 +324,12 @@ assert new_cost == orig_cost, (
         n0=new_cost, n1=orig_cost))
 
 new_connects, new_order, open_ord = remove_tensor(
-    connects, which_env, order=order, standardize_outputs=True, one_based=True)
+    connects, which_env, order=order, relabel_outputs=True, one_based=True)
 
-new_connects_ex = [[1, -3, 14, 2], [3, 9, 12], [4, -2, 9, 10], [3, 4, 1, -1, 2], 
-                   [11, -4, 15], [11, 10, 13], [12, 13, 14, 15, 16, 16]]
-new_order_ex = [3, 4, 9, 1, 2, 13, 11, 15, 10, 12, 14]
+new_connects_ex = [['a', -3, 13, 'b'], [1, 8, 11], [2, -2, 8, 9],
+                   [1, 2, 'a', -1, 'b'], [10, -4, 14], [10, 9, 12],
+                   [11, 12, 13, 14, 16, 16]]
+new_order_ex = [1, 2, 8, 'a', 'b', 12, 10, 14, 13, 9, 11]
 open_ord_ex = [-1, -2, -3, -4, -5, -6, -7]
 
 assert np.all([new_connects[k] == new_connects_ex[k] for 
@@ -406,38 +407,34 @@ assert np.allclose(tensor_out, tensor_ex), (
 # unit test: partial_trace
 
 labels = [1,1,2,3,4,3,5,2]
-new_labels, tr_inds = partial_trace(labels)[:2]
+new_labels = partial_trace(labels)[0]
+new_labels_ex = [4,5]
 
-new_labels_ex = np.array([4,5], dtype=int)
-tr_inds_ex = np.array([1,2,3], dtype=int)
-
-assert np.array_equal(new_labels, new_labels_ex), (
+assert new_labels == new_labels_ex, (
     'incorrect labels: {n0} vs {n1}'.format(
         n0=new_labels, n1=new_labels_ex))
 
-assert np.array_equal(tr_inds_ex, tr_inds), (
-    'incorrect traced inds: {n0} vs {n1}'.format(
-        n0=tr_inds_ex, n1=tr_inds))
+labels = ['b','b','a','c','d','c',5,'a']
+new_labels = partial_trace(labels)[0]
+new_labels_ex = ['d',5]
+
+assert new_labels == new_labels_ex, (
+    'incorrect labels: {n0} vs {n1}'.format(
+        n0=new_labels, n1=new_labels_ex))
 
 tensor = np.eye(16).reshape(2,2,2,2,2,2,2,2)
-labels = [-1,1,2,-2,-3,1,2,-4]
-tr_tensor, new_labels, tr_inds, cost = partial_trace(labels, tensor=tensor)
-
+labels = [-1,1,'a',-2,-3,1,'a',-4]
+tr_tensor, new_labels, cost = partial_trace(labels, tensor=tensor)
 tr_tensor_ex = np.eye(4).reshape(2,2,2,2) * 4
 cost_ex = 64
-new_labels_ex = np.array([-1,-2,-3,-4], dtype=int)
-tr_inds_ex = np.array([1,2], dtype=int)
+new_labels_ex = [-1,-2,-3,-4]
 
 assert np.allclose(tr_tensor, tr_tensor_ex), (
     'incorrect traced tensor')
 
-assert np.array_equal(new_labels, new_labels_ex), (
+assert new_labels == new_labels_ex, (
     'incorrect labels: {n0} vs {n1}'.format(
         n0=new_labels, n1=new_labels_ex))
-
-assert np.array_equal(tr_inds_ex, tr_inds), (
-    'incorrect traced inds: {n0} vs {n1}'.format(
-        n0=tr_inds_ex, n1=tr_inds))
 
 assert cost == cost_ex, (
     'incorrect cost of partial trace: {n0} vs {n1}'.format(
@@ -561,7 +558,7 @@ connects = [[1, 3, 10, 11], [4, 7, 12, 13], [8, 10, -3], [11, 12, -4],
             [13, 14, -5], [2, 5, 6, 3, 4, 7], [1, 2, 9, 17], 
             [5, 6, 16, 15], [8, 9, -0], [17, 16, -1], [15, 14, -2]]
 all_envs, order, cost = xcon(tensors, connects, return_info=True,
-                             solver='full', standardize_inputs=False)
+                             solver='full')
 
 tensors = [u,u,w,w,w,ham,u,u,w,w,w]
 connects = [[1, 'c', 'b', 11], [4, 7, 12, 13], [8, 'b', -3], [11, 12, -4],
@@ -573,3 +570,9 @@ all_envs0, order0, cost0 = xcon(tensors, connects, return_info=True,
 
 assert np.allclose(all_envs, all_envs0), (
             'incorrect network contraction')
+
+from network_solve import call_solver
+call_solver([(2,2,2,2,2,2),(2,2,2,2,2)],[[1,2,3,2,4,5],[5,1,6,7,6]])
+
+
+

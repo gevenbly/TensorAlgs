@@ -9,7 +9,9 @@ Original file is located at
 
 import numpy as np
 from numpy import linalg as LA
+import matplotlib.pyplot as plt
 from scipy.sparse.linalg import eigsh
+from timeit import default_timer as timer
 from typing import Optional, List, Union, Tuple
 from IPython.display import clear_output 
 from network_helpers import (
@@ -58,9 +60,9 @@ def define_ham(blocksize):
                  1.0*tprod(np.eye(d0**1), ham_loc, np.eye(d0**1)) +
                  0.5*tprod(np.eye(d0**2), ham_loc)
                  ).reshape(d0*np.ones(8, dtype=int))
-    hamAB_init = ham_block.transpose(0,1,4,3,5,6,8,7
+    hamAB_init = ham_block.transpose(0,1,3,2,4,5,7,6
                                     ).reshape(d1, d1, d1, d1)
-    hamBA_init = ham_block.transpose(1,0,3,4,6,5,7,8
+    hamBA_init = ham_block.transpose(1,0,2,3,5,4,6,7
                                     ).reshape(d1, d1, d1, d1)
   elif blocksize==3:
     ham_block = (1.0*tprod(np.eye(d0**1), ham_loc, np.eye(d0**3)) + 
@@ -305,6 +307,57 @@ def optimize_v(hamAB, hamBA, w, v, u, rhoAB, rhoBA, network_dict,
 
   return v_out
 
+def optimize_all(hamAB, hamBA, w, v, u, rhoAB, rhoBA, network_dict, 
+                 ref_sym=False):
+  """ Optimise the all tensors within a layer, raise the Hamiltonian, lower
+  the density matrix."""
+
+  if ref_sym:
+    v_env0, rhoBA0, hamAB_out = xcon(
+      [v, v, hamBA, w, w, rhoAB], network_dict['connects_M'], 
+      order=network_dict['order_M'], which_envs=[0,2,5])
+    
+    v_env1, u_env0, rhoAB0, v_env2, hamBA0 = xcon(
+      [w, w, u, u, hamAB, v, v, rhoBA], network_dict['connects_L'], 
+      order=network_dict['order_L'], which_envs=[0,2,4,5,7])
+    
+    v_env3, u_env1, rhoBA1, hamBA1 = xcon(
+      [w, w, u, u, hamBA, v, v, rhoBA], network_dict['connects_C'], 
+      order=network_dict['order_C'], which_envs=[0,2,4,7])
+      
+    v_out = orthogonalize(v_env0 + v_env1 + v_env2 + v_env3, partition=2)
+    w_out = v_out
+    u_out = orthogonalize(u_env0 + u_env0.transpose(1,0,3,2) + u_env1, 
+                          partition=2)
+    rhoBA_out = 0.5 * (rhoBA0 + rhoBA1)
+    rhoAB_out = 0.5 * (rhoAB0 + rhoAB0.transpose(1,0,3,2))
+    hamBA_out = hamBA0 + hamBA1 + hamBA0.transpose(1,0,3,2)
+  else:
+    v_env0, rhoBA0, w_env0, hamAB_out = xcon(
+      [v, v, hamBA, w, w, rhoAB], network_dict['connects_M'], 
+      order=network_dict['order_M'], which_envs=[0,2,3,5])
+    
+    w_env1, u_env0, rhoAB0, v_env1, hamBA0 = xcon(
+      [w, w, u, u, hamAB, v, v, rhoBA], network_dict['connects_L'], 
+      order=network_dict['order_L'], which_envs=[0,2,4,5,7])
+    
+    w_env2, u_env1, rhoBA1, v_env2, hamBA1 = xcon(
+      [w, w, u, u, hamBA, v, v, rhoBA], network_dict['connects_C'], 
+      order=network_dict['order_C'], which_envs=[0,2,4,5,7])
+    
+    w_env3, u_env2, rhoAB1, v_env3, hamBA2 = xcon(
+      [w, w, u, u, hamAB, v, v, rhoBA], network_dict['connects_R'], 
+      order=network_dict['order_R'], which_envs=[0,2,4,5,7])
+      
+    v_out = orthogonalize(v_env0 + v_env1 + v_env2 + v_env3, partition=2)
+    w_out = orthogonalize(w_env0 + w_env1 + w_env2 + w_env3, partition=2)
+    u_out = orthogonalize(u_env0 + u_env1 + u_env2, partition=2)
+    rhoBA_out = 0.5 * (rhoBA0 + rhoBA1)
+    rhoAB_out = 0.5 * (rhoAB0 + rhoAB1)
+    hamBA_out = hamBA0 + hamBA1 + hamBA2
+
+  return hamAB_out, hamBA_out, w_out, v_out, u_out, rhoAB_out, rhoBA_out
+
 def optimize_u(hamAB, hamBA, w, v, u, rhoAB, rhoBA, network_dict, 
                ref_sym=False):
   """ Optimise the `u` disentangler """
@@ -333,16 +386,14 @@ def optimize_u(hamAB, hamBA, w, v, u, rhoAB, rhoBA, network_dict,
   return u_out
 
 def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict, 
-                       chi=None, chimid=None, layers=None, scale_iters=3, 
+                       chi=None, chimid=None, layers=None, scale_iters=4, 
                        mtype='finite', display_step=10, en_shift=0, en_exact=0,
-                       blocksize=1, iterations=100):
+                       blocksize=1, iterations=100, ref_sym=False):
 
   # Initialize display output
   clear_output()
   max_display = 10
-  min_display = 5
   num_display = 0
-  display_strings = [''] * min_display
 
   # add extra layers if necessary
   if layers is not None:
@@ -356,7 +407,7 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
       rhoBA.append(rhoBA[-1])
   else:
     layers = len(wC)
-
+  
   # expand tensors to new dims if necessary
   if (chi is not None) and (chimid is not None):
     for z in range(layers):
@@ -375,14 +426,18 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
         vC[z] = expand_dims(vC[z], (chi, chimid, chi))
 
   # start variational iterations
-  num_sites = 2*blocksize*(2**layers)
-  for iter in range(iterations):
+  start_time = timer()
+  for kiter in range(iterations):
 
     # sweep over all layers
     for z in range(layers):
+      if z > 1000:
+        hamAB[z+1], hamBA[z+1], wC[z], vC[z], uC[z], rhoAB[z], rhoBA[z] = (
+          optimize_all(hamAB[z], hamBA[z], wC[z], vC[z], uC[z], rhoAB[z+1], 
+                        rhoBA[z+1], network_dict, ref_sym=ref_sym))   
 
       # optimize isometries
-      if iter > 2:
+      if kiter > 2:
         wC[z] = optimize_w(hamAB[z], hamBA[z], wC[z], vC[z], uC[z], rhoAB[z+1], 
                           rhoBA[z+1], network_dict, ref_sym=ref_sym)      
         if ref_sym is True:
@@ -392,7 +447,7 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
                             rhoBA[z+1], network_dict, ref_sym=ref_sym)
       
       # optimize disentanglers
-      if iter > 10:
+      if kiter > 10:
         uC[z] = optimize_u(hamAB[z], hamBA[z], wC[z], vC[z], uC[z], rhoAB[z+1], 
                           rhoBA[z+1], network_dict, ref_sym=ref_sym)
       
@@ -403,22 +458,31 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
 
     # find top-layer density matrices
     if mtype == 'scale':
+      # rhoBA_temp = rhoBA[layers - 1] 
+      # rhoAB_temp = rhoAB[layers - 1]
+      # # rhoBA[layers] = rhoBA[layers] / xcon([rhoBA[layers]],[[1,2,1,2]])
+      # # rhoAB[layers] = rhoAB[layers] / xcon([rhoAB[layers]],[[1,2,1,2]])
+      
       # find scale-invariant density matrix (power method)
+      rhoAB_temp = rhoAB[layers-1]
+      rhoBA_temp = rhoBA[layers-1]
+      
+      # ensure Hermitcity
+      rhoAB_temp = rhoAB_temp + rhoAB_temp.transpose(2,3,0,1)
+      rhoBA_temp = rhoBA_temp + rhoBA_temp.transpose(2,3,0,1)
+      
+      if ref_sym:
+        # ensure reflection symmetric
+        rhoAB_temp = rhoAB_temp + rhoAB_temp.transpose(1,0,3,2)
+        rhoBA_temp = rhoBA_temp + rhoBA_temp.transpose(1,0,3,2)
+        
       for k in range(scale_iters):
         rhoAB_temp, rhoBA_temp = lower_density(hamAB[layers-1], hamBA[layers-1], 
                                               wC[layers-1], vC[layers-1], 
-                                              uC[layers-1], rhoAB[layers], 
-                                              rhoBA[layers], network_dict, 
+                                              uC[layers-1], rhoAB_temp, 
+                                              rhoBA_temp, network_dict, 
                                               ref_sym=ref_sym)
-        # ensure Hermitcity
-        rhoAB_temp = rhoAB_temp + rhoAB_temp.transpose(2,3,0,1)
-        rhoBA_temp = rhoBA_temp + rhoBA_temp.transpose(2,3,0,1)
-
-        if ref_sym:
-          # ensure reflection symmetric
-          rhoAB_temp = rhoAB_temp + rhoAB_temp.transpose(1,0,3,2)
-          rhoBA_temp = rhoBA_temp + rhoBA_temp.transpose(1,0,3,2)
-
+    
       rhoAB[layers] = rhoAB_temp / np.trace(matricize(rhoAB_temp))
       rhoBA[layers] = rhoBA_temp / np.trace(matricize(rhoBA_temp))
 
@@ -438,26 +502,25 @@ def modbinary_optimize(hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, network_dict,
                                         ref_sym=ref_sym)
     
     # evaluate energy
-    if np.remainder(iter+1,display_step) == 0:
+    if np.remainder(kiter+1,display_step) == 0:
+      iter_time = timer() - start_time
+      start_time = timer()
       energy0 = (np.trace(matricize(rhoAB[0]) @ matricize(hamAB[0])) +
                 np.trace(matricize(rhoBA[0]) @ matricize(hamBA[0])))
       energy = 0.5*(energy0 / blocksize) + en_shift
-      log_err = np.log10(energy - en_exact)
+      en_err = (energy - en_exact)
 
       # print to console
       if num_display > max_display:
         clear_output()
-        for string in display_strings:
-          print(string)
         num_display = 0 
       else:
         num_display += 1
       
-      temp_string = ('Iter {iter} of {iterations}, Energy: {energy:.10f}, '
-      'Log10-Err: {log_err:0.3f}'.format(iter=iter, iterations=iterations, 
-                                          energy=energy, log_err=log_err))
-      del display_strings[0]
-      display_strings.append(temp_string)
+      temp_string = ('Iter {kiter} of {iterations}, Energy: {energy:.10f}, '
+      'En-err: {en_err:0.3e}, Time {iter_time:.3f}'.format(
+        kiter=kiter, iterations=iterations, energy=energy, en_err=en_err,
+        iter_time=iter_time))
       print(temp_string)
 
   return hamAB, hamBA, wC, vC, uC, rhoAB, rhoBA, energy
