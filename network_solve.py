@@ -29,10 +29,10 @@ def call_solver(tensors: Union[List[np.ndarray], List[tuple]],
     bool: specifies if contraction order is guaranteed optimal.
   """
   # extract tensor shapes if necessary
-  if not isinstance(tensors[0], tuple):
-    dims = [tensor.shape for tensor in tensors]
-  else:
+  if isinstance(tensors[0], (tuple, list)):
     dims = tensors
+  else:
+    dims = [tensor.shape for tensor in tensors]
 
   # build log-adjacency matrix
   log_adj = ncon_to_weighted_adj(dims, labels)
