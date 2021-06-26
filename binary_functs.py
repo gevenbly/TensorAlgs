@@ -18,9 +18,10 @@ from network_helpers import (
 from network_contract import solve_order, xcon
 from network_render import draw_network
 
-def optimise_MERA(uC,wC,hC,rhoC,network_dict,layers,niter=100,en_exact=0):
+def optimise_MERA(uC, wC, hC, rhoC, network_dict, layers, niter=100, 
+                  blocksize=1, en_exact=0):
   """ Algorithm for optimizing a finite MERA via energy minimization"""
-  N = 3 * (2**layers) 
+  N = 3 * (2**layers) * blocksize
   for k in range(niter):
     # compute the local reduced density matrices
     for z in reversed(range(layers)):
@@ -45,11 +46,7 @@ def optimise_MERA(uC,wC,hC,rhoC,network_dict,layers,niter=100,en_exact=0):
       print('Iteration: %d of %d, Energy: %f, Err: %e' %
                 (k, niter, energy, energy - en_exact))
       
-  return uC,wC,hC,rhoC
-
-# run some variational optimization sweeps
-uC, wC, hC, rhoC = optimise_MERA(uC, wC, hC, rhoC, network_dict, layers, 
-                                 niter=100,en_exact=en_exact)
+  return uC, wC, hC, rhoC
 
 def optimize_top(h):
   """ Updates the top tensor of the MERA from the top-level 'h' coupling """
