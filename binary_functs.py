@@ -18,7 +18,7 @@ from network_helpers import (
 from network_contract import solve_order, xcon
 from network_render import draw_network
 
-def optimise_MERA(uC, wC, hC, rhoC, network_dict, layers, niter=100, 
+def optimize_MERA(uC, wC, hC, rhoC, network_dict, layers, niter=100, 
                   blocksize=1, en_exact=0):
   """ Algorithm for optimizing a finite MERA via energy minimization"""
   N = 3 * (2**layers) * blocksize
