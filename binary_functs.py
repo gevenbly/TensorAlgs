@@ -27,6 +27,14 @@ def optimize_MERA(uC, wC, hC, rhoC, network_dict, layers, niter=100,
     for z in reversed(range(layers)):
       rhoC[z] = descend_super(uC[z], wC[z], rhoC[z+1], network_dict)
 
+    # evaluate the new energy
+    energy = np.real(xcon([rhoC[0], hC[0]], 
+                          [[1,2,3,4,5,6], [1,2,3,4,5,6]])) / blocksize
+    # print convergence info 
+    if np.mod(k, 10) == 1:
+      print('Iteration: %d of %d, Energy: %f, Err: %e' %
+                (k, niter, energy, energy - en_exact))
+
     # begin the variational sweep
     for z in range(layers):
       # update the disentanglers and isometries
@@ -38,13 +46,6 @@ def optimize_MERA(uC, wC, hC, rhoC, network_dict, layers, niter=100,
     # update the top tensor
     qtop = optimize_top(hC[layers])
     rhoC[layers] = np.outer(qtop.conj(), qtop).reshape(hC[layers].shape)
-    # evaluate the new energy
-    energy = np.real(xcon([rhoC[layers], hC[layers]], 
-                          [[1,2,3,4,5,6], [1,2,3,4,5,6]])) / (2**layers)
-    # print convergence info 
-    if np.mod(k, 10) == 1:
-      print('Iteration: %d of %d, Energy: %f, Err: %e' %
-                (k, niter, energy, energy - en_exact))
       
   return uC, wC, hC, rhoC
 
