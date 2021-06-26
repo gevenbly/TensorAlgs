@@ -7,6 +7,17 @@ Original file is located at
     https://colab.research.google.com/drive/1ysi8rnluAWSD0I29-b_gj6fT2Yyv1oWb
 """
 
+import numpy as np
+from numpy import linalg as LA
+import matplotlib.pyplot as plt
+from scipy.sparse.linalg import eigsh
+from typing import Optional, List, Union, Tuple
+from IPython.display import clear_output 
+from network_helpers import (
+    tprod, orthogonalize, expand_dims, matricize)
+from network_contract import solve_order, xcon
+from network_render import draw_network
+
 def optimise_MERA(uC,wC,hC,rhoC,network_dict,layers,niter=100,en_exact=0):
   """ Algorithm for optimizing a finite MERA via energy minimization"""
   N = 3 * (2**layers) 
